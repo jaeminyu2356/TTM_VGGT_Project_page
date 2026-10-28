@@ -1,0 +1,631 @@
+/* TTM project page — figures & interactions. Plain JS, no build step. */
+(() => {
+  'use strict';
+
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const $ = (s) => document.querySelector(s);
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function el(tag, attrs = {}, parent) {
+    const n = document.createElementNS(SVGNS, tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === 'text') n.textContent = v; else n.setAttribute(k, v);
+    }
+    if (parent) parent.appendChild(n);
+    return n;
+  }
+  const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+  const ease = (x) => { x = clamp(x, 0, 1); return x < .5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2; };
+  const phase = (t, a, b) => ease((t - a) / (b - a));
+  // deterministic hash in [0,1)
+  const hash = (...xs) => {
+    let h = 2166136261;
+    for (const x of xs) { h ^= (x * 2654435761) >>> 0; h = Math.imul(h, 16777619) >>> 0; }
+    return (h >>> 0) / 4294967296;
+  };
+  const fmt = (x) => {
+    const a = Math.abs(x);
+    if (a >= 1e12) return (x / 1e12).toFixed(2) + 'T';
+    if (a >= 1e9) return (x / 1e9).toFixed(2) + 'B';
+    if (a >= 1e6) return (x / 1e6).toFixed(1) + 'M';
+    if (a >= 1e3) return (x / 1e3).toFixed(1) + 'K';
+    return String(Math.round(x));
+  };
+  const fmtBytes = (b) => b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : (b / 1e6).toFixed(0) + ' MB';
+
+  // shared tooltip
+  const tip = document.createElement('div');
+  tip.className = 'tooltip'; tip.hidden = true; tip.style.position = 'fixed';
+  document.body.appendChild(tip);
+  function showTip(html, ev) {
+    tip.innerHTML = html; tip.hidden = false;
+    const r = tip.getBoundingClientRect();
+    let x = ev.clientX + 14, y = ev.clientY - r.height - 10;
+    if (x + r.width > window.innerWidth - 8) x = ev.clientX - r.width - 14;
+    if (y < 8) y = ev.clientY + 16;
+    tip.style.left = x + 'px'; tip.style.top = y + 'px';
+  }
+  const hideTip = () => { tip.hidden = true; };
+
+  /* ---------------- KaTeX ---------------- */
+  function renderMath() {
+    if (!window.katex) return;
+    document.querySelectorAll('.m').forEach((n) => katex.render(n.textContent, n, { throwOnError: false }));
+    document.querySelectorAll('.eq').forEach((n) => katex.render(n.dataset.tex, n, { displayMode: true, throwOnError: false }));
+  }
+
+  /* ---------------- Hero animation ---------------- */
+  function hero() {
+    const svg = $('#hero-anim'); if (!svg) return;
+    const F = 4, G = 6, CELL = 20, GAP = 3, FW = G * CELL + (G - 1) * GAP, X0 = 24, FGAP = 26, Y0 = 130;
+    const fx = (f) => X0 + f * (FW + FGAP);
+    const cx = (f, c) => fx(f) + c * (CELL + GAP) + CELL / 2;
+    const cy = (r) => Y0 + r * (CELL + GAP) + CELL / 2;
+
+    // world scene: each frame sees world columns shifted by one (camera pans)
+    const world = (wx, wy) => {
+      if ((wx === 5 && (wy === 2 || wy === 3)) || (wx === 6 && wy === 3)) return 'var(--s2)';
+      if (wy < 2) return 'var(--tok-a)';
+      if (wy >= 4) return 'var(--tok-c)';
+      return 'var(--tok-b)';
+    };
+
+    const step = el('text', { x: 480, y: 34, 'text-anchor': 'middle', class: 't-strong', 'font-size': 16 }, svg);
+    const sub = el('text', { x: 480, y: 56, 'text-anchor': 'middle', 'font-size': 13 }, svg);
+
+    const tokens = []; // {f,r,c,idx,node,dropped,match}
+    const gFrames = el('g', {}, svg);
+    for (let f = 0; f < F; f++) {
+      el('text', { x: fx(f) + FW / 2, y: Y0 - 14, 'text-anchor': 'middle', 'font-size': 12, class: 'mono', text: `frame t${f ? '+' + f : ''}` }, gFrames);
+      for (let r = 0; r < G; r++) for (let c = 0; c < G; c++) {
+        const wx = c + f, wy = r;
+        const node = el('rect', {
+          x: fx(f) + c * (CELL + GAP), y: Y0 + r * (CELL + GAP), width: CELL, height: CELL, rx: 4,
+          fill: world(wx, wy), 'fill-opacity': 0.75 + 0.25 * hash(wx, wy), stroke: 'var(--text-2)', 'stroke-width': 0, 'stroke-dasharray': '3 2',
+        }, gFrames);
+        tokens.push({ f, r, c, idx: f * G * G + r * G + c, node, dropped: false, match: null });
+      }
+    }
+    // choose sources: even grid index, valid twin in reference frame, 12 per frame
+    const N_DROP = 12;
+    for (let f = 0; f < F; f++) {
+      const ref = f < F - 1 ? f + 1 : f - 1, dc = f < F - 1 ? -1 : 1;
+      const cands = tokens.filter((t) => t.f === f && ((t.r * G + t.c) % 2 === 0) && t.c + dc >= 0 && t.c + dc < G)
+        .sort((a, b) => hash(a.idx, 7) - hash(b.idx, 7)).slice(0, N_DROP);
+      cands.forEach((t) => { t.dropped = true; t.match = tokens[ref * G * G + t.r * G + (t.c + dc)]; });
+    }
+    const gLines = el('g', { fill: 'none', stroke: 'var(--accent)', 'stroke-width': 1.5, 'stroke-linecap': 'round' }, svg);
+    const dropped = tokens.filter((t) => t.dropped);
+    dropped.forEach((t, i) => {
+      const x1 = cx(t.f, t.c), y1 = cy(t.r), x2 = cx(t.match.f, t.match.c), y2 = cy(t.match.r);
+      const mx = (x1 + x2) / 2, my = Math.min(y1, y2) - 22 - 10 * hash(i);
+      const p = el('path', { d: `M${x1},${y1} Q${mx},${my} ${x2},${y2}` }, gLines);
+      t.line = p; t.len = p.getTotalLength();
+      p.setAttribute('stroke-dasharray', t.len); p.setAttribute('stroke-dashoffset', t.len);
+    });
+
+    // attention matrix: rows = queries (all N), cols = keys
+    const N = F * G * G, MX = 700, MY = 96, MS = 228;
+    el('text', { x: MX + MS / 2, y: Y0 - 50, 'text-anchor': 'middle', 'font-size': 12, class: 'mono', text: 'global attention map' }, svg);
+    const rowLabel = el('text', { x: MX - 10, y: MY + MS / 2, 'text-anchor': 'middle', 'font-size': 12, transform: `rotate(-90 ${MX - 10} ${MY + MS / 2})`, text: `Q: all ${N} tokens` }, svg);
+    const colLabel = el('text', { x: MX + MS / 2, y: MY + MS + 22, 'text-anchor': 'middle', 'font-size': 12, text: '' }, svg);
+    const gCols = el('g', {}, svg);
+    const colW = MS / N;
+    const cols = tokens.map((t) => el('rect', {
+      y: MY, height: MS, fill: t.f % 2 ? 'var(--tok-a)' : 'var(--accent)', 'fill-opacity': t.f % 2 ? 0.9 : 0.55,
+    }, gCols));
+    void rowLabel;
+    const sizeText = el('text', { x: MX + MS / 2, y: MY + MS + 44, 'text-anchor': 'middle', 'font-size': 13, class: 't-strong mono' }, svg);
+
+    const STEPS = [
+      ['1 · A video gives S frames × P tokens', 'Neighbouring frames see almost the same scene, shifted by a little parallax.'],
+      ['2 · Match each token to its twin in the next frame', 'Cosine similarity in VGGT\'s own frozen key space — no training.'],
+      ['3 · Drop the redundant twins from keys & values', 'Dashed tokens are gone from K/V but still ask a query, so every position keeps its output.'],
+      ['4 · The attention map shrinks: N×N → N×N_red', 'Rows (queries) stay full length, so there is nothing to unmerge.'],
+    ];
+    const T = 10;
+    function draw(t) {
+      const pIn = phase(t, 0, 0.8), pLine = (i) => phase(t, 1.0 + i * 0.06, 2.0 + i * 0.06), pDrop = phase(t, 3.6, 4.6);
+      const pCol = phase(t, 5.0, 6.4), pOut = 1 - phase(t, 9.3, 10);
+      const k = t < 1.0 ? 0 : t < 3.6 ? 1 : t < 5.0 ? 2 : 3;
+      step.textContent = STEPS[k][0]; sub.textContent = STEPS[k][1];
+      svg.style.opacity = Math.min(pIn, pOut).toFixed(3);
+      dropped.forEach((d, i) => {
+        d.line.setAttribute('stroke-dashoffset', d.len * (1 - pLine(i)));
+        d.line.setAttribute('stroke-opacity', 0.85 * (1 - phase(t, 4.6, 5.4)));
+        d.node.setAttribute('fill-opacity', (0.75 + 0.25 * hash(d.c + d.f, d.r)) * (1 - 0.85 * pDrop));
+        d.node.setAttribute('stroke-width', 1.2 * pDrop);
+      });
+      // columns: dropped ones collapse
+      let x = MX;
+      tokens.forEach((tk, i) => {
+        const w = tk.dropped ? colW * (1 - pCol) : colW;
+        const c = cols[i];
+        c.setAttribute('x', x); c.setAttribute('width', Math.max(0, w - (w > 1.2 ? 0.3 : 0)));
+        if (tk.dropped) c.setAttribute('fill', pDrop > 0.5 ? 'var(--bad)' : (tk.f % 2 ? 'var(--tok-a)' : 'var(--accent)'));
+        x += w;
+      });
+      const curK = Math.round(N - dropped.length * pCol);
+      colLabel.textContent = `K, V: ${curK} tokens`;
+      sizeText.textContent = `${N} × ${curK} = ${(N * curK).toLocaleString()} scores`;
+    }
+
+    let start = performance.now(), paused = false, pausedAt = 0, raf;
+    const btn = $('#hero-toggle');
+    function loop(now) {
+      draw(((now - start) / 1000) % T);
+      raf = requestAnimationFrame(loop);
+    }
+    if (reduceMotion) { draw(7.5); btn.textContent = 'Play'; paused = true; pausedAt = 7.5; }
+    else raf = requestAnimationFrame(loop);
+    btn.addEventListener('click', () => {
+      if (paused) { start = performance.now() - pausedAt * 1000; raf = requestAnimationFrame(loop); btn.textContent = 'Pause'; }
+      else { cancelAnimationFrame(raf); pausedAt = ((performance.now() - start) / 1000) % T; btn.textContent = 'Play'; }
+      paused = !paused;
+    });
+  }
+
+  /* ---------------- Attention cost explorer ---------------- */
+  function explorer() {
+    const svg = $('#matrix-viz'); if (!svg) return;
+    const sIn = $('#s-in'), rIn = $('#r-in'), out = $('#matrix-readout');
+    const P_PATCH = 1369, P = P_PATCH + 5, SMAX = 200, SIDE = 270, OX = 40, OY = 14;
+    const ref = el('rect', { x: OX, y: OY, width: SIDE, height: SIDE, fill: 'none', stroke: 'var(--grid)', 'stroke-dasharray': '4 4' }, svg);
+    void ref;
+    const vRect = el('rect', { x: OX, y: OY, rx: 3, fill: 'var(--s2)', 'fill-opacity': 0.18, stroke: 'var(--s2)', 'stroke-width': 1.5 }, svg);
+    const tRect = el('rect', { x: OX, y: OY, rx: 3, fill: 'var(--s1)', 'fill-opacity': 0.55 }, svg);
+    const lblQ = el('text', { 'font-size': 12, 'text-anchor': 'middle' }, svg);
+    const lblK = el('text', { 'font-size': 12 }, svg);
+    const legend = el('g', { 'font-size': 12 }, svg);
+    el('rect', { x: 340, y: 40, width: 12, height: 12, rx: 3, fill: 'var(--s2)', 'fill-opacity': .35, stroke: 'var(--s2)' }, legend);
+    el('text', { x: 358, y: 50, text: 'Vanilla  N × N' }, legend);
+    el('rect', { x: 340, y: 64, width: 12, height: 12, rx: 3, fill: 'var(--s1)', 'fill-opacity': .7 }, legend);
+    el('text', { x: 358, y: 74, text: 'TTM  N × N_red' }, legend);
+    el('text', { x: 340, y: 110, class: 't-muted', 'font-size': 11, text: 'dashed box = S = 200' }, legend);
+
+    function update() {
+      const S = +sIn.value, r = +rIn.value;
+      $('#s-out').textContent = S; $('#r-out').textContent = r.toFixed(2);
+      const n = Math.min(Math.floor(r * P_PATCH), Math.floor(P_PATCH / 2));
+      const N = S * P, Nred = S * (P - n);
+      const side = SIDE * S / SMAX;
+      vRect.setAttribute('width', side); vRect.setAttribute('height', side);
+      tRect.setAttribute('width', side * Nred / N); tRect.setAttribute('height', side);
+      lblQ.setAttribute('x', OX - 14); lblQ.setAttribute('y', OY + side / 2);
+      lblQ.setAttribute('transform', `rotate(-90 ${OX - 14} ${OY + side / 2})`); lblQ.textContent = `N = ${N.toLocaleString()}`;
+      lblK.setAttribute('x', OX); lblK.setAttribute('y', OY + side + 16); lblK.textContent = `N_red = ${Nred.toLocaleString()}`;
+      const vE = N * N, tE = N * Nred;
+      out.innerHTML = `
+        <div class="row"><div>Vanilla scores / head / layer</div><div class="big">${fmt(vE)}</div><div>${fmtBytes(vE * 2)} in BF16</div></div>
+        <div class="row"><div>TTM (merged layer)</div><div class="big" style="color:var(--s1)">${fmt(tE)}</div><div>${fmtBytes(tE * 2)} in BF16 · ${(vE / tE).toFixed(2)}× fewer</div></div>
+        <div class="row"><div>Doubling S → vanilla cost</div><div><b>×4</b> (quadratic)</div></div>`;
+    }
+    sIn.addEventListener('input', update); rIn.addEventListener('input', update);
+    update();
+  }
+
+  /* ---------------- Pipeline overview ---------------- */
+  const TAPS = [4, 11, 17, 23];
+  function pipeline() {
+    const svg = $('#pipeline'); if (!svg) return;
+    const defs = el('defs', {}, svg);
+    const mk = el('marker', { id: 'arr', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, defs);
+    el('path', { d: 'M0,0 L10,5 L0,10 z', fill: 'var(--text-3)' }, mk);
+    const arrow = (x1, y1, x2, y2, extra = {}) => el('path', { d: `M${x1},${y1} L${x2},${y2}`, stroke: 'var(--text-3)', 'stroke-width': 1.5, fill: 'none', 'marker-end': 'url(#arr)', ...extra }, svg);
+    const box = (x, y, w, h, label, sub, strong) => {
+      el('rect', { x, y, width: w, height: h, rx: 8, fill: strong ? 'var(--accent-soft)' : 'var(--surface-2)', stroke: strong ? 'var(--accent)' : 'var(--border)' }, svg);
+      el('text', { x: x + w / 2, y: y + h / 2 + (sub ? -3 : 4), 'text-anchor': 'middle', 'font-size': 12, class: 't-strong', text: label }, svg);
+      if (sub) el('text', { x: x + w / 2, y: y + h / 2 + 13, 'text-anchor': 'middle', 'font-size': 10.5, text: sub }, svg);
+    };
+    // frames
+    for (let i = 0; i < 4; i++) el('rect', { x: 16 + i * 6, y: 150 + i * 6, width: 54, height: 40, rx: 4, fill: 'var(--tok-a)', stroke: 'var(--surface)', 'stroke-width': 1.5 }, svg);
+    el('text', { x: 52, y: 222, 'text-anchor': 'middle', 'font-size': 11, text: 'S video frames' }, svg);
+    arrow(92, 176, 106, 176);
+    box(108, 152, 66, 48, 'Patch', 'embed');
+    arrow(176, 176, 188, 176);
+    // blocks
+    const BX = 190, BW = 22, BG = 3, BY = 150, BH = 52;
+    for (let l = 0; l < 24; l++) {
+      const x = BX + l * (BW + BG), tap = TAPS.includes(l), early = l < 5;
+      el('rect', {
+        x, y: BY, width: BW, height: BH, rx: 4,
+        fill: tap ? 'var(--surface)' : early ? 'var(--surface-2)' : 'var(--accent)',
+        'fill-opacity': tap || early ? 1 : 0.8,
+        stroke: tap ? 'var(--accent)' : 'var(--border)', 'stroke-width': tap ? 2 : 1,
+      }, svg);
+      el('text', { x: x + BW / 2, y: BY + BH + 14, 'text-anchor': 'middle', 'font-size': 9.5, class: tap ? 't-strong mono' : 'mono t-muted', text: l }, svg);
+    }
+    el('text', { x: BX + 12 * (BW + BG), y: BY - 12, 'text-anchor': 'middle', 'font-size': 12, class: 't-strong', text: '24 alternating blocks (frame attn + global attn)' }, svg);
+    // heads
+    const HX = BX + 24 * (BW + BG) + 18;
+    arrow(HX - 16, 176, HX, 176);
+    ['Depth head', 'Point head', 'Camera head'].forEach((h, i) => box(HX, 128 + i * 34, 120, 28, h));
+    // tap curves to heads
+    TAPS.forEach((l) => {
+      const x = BX + l * (BW + BG) + BW / 2;
+      el('path', { d: `M${x},${BY + BH + 20} Q${x},${BY + BH + 44} ${HX - 30},${BY + BH + 44}`, stroke: 'var(--accent)', 'stroke-width': 1, fill: 'none', 'stroke-opacity': 0.6 }, svg);
+    });
+    el('text', { x: BX + 300, y: BY + BH + 60, 'text-anchor': 'middle', 'font-size': 11, text: 'M1: only taps {4, 11, 17, 23} are stored for the heads' }, svg);
+    // pass 0
+    box(190, 22, 180, 48, 'Pass 0 · 224 px', 'TTM (M1+M2), ~10% time', false);
+    arrow(372, 46, 400, 46);
+    box(402, 22, 120, 48, 'Poses → F', 'F = K⁻ᵀ[t]ₓR K⁻¹');
+    arrow(524, 46, 552, 46);
+    box(554, 22, 160, 48, 'Epipolar gates', 'shared by all merge layers', true);
+    arrow(634, 72, 634, BY - 22, { 'stroke-dasharray': '4 3' });
+    el('text', { x: 642, y: 112, 'font-size': 11, text: 'M5 (optional)' }, svg);
+    // legend
+    const ly = 286;
+    const lg = [['var(--accent)', 0.8, 'var(--border)', 'KV-asymmetric global attn (M2)'], ['var(--surface)', 1, 'var(--accent)', 'DPT tap: full attn, stored (M1)'], ['var(--surface-2)', 1, 'var(--border)', 'early layers: full attn']];
+    let lx = 190;
+    lg.forEach(([f, o, s, t]) => {
+      el('rect', { x: lx, y: ly - 10, width: 12, height: 12, rx: 3, fill: f, 'fill-opacity': o, stroke: s, 'stroke-width': 1.5 }, svg);
+      const tx = el('text', { x: lx + 18, y: ly, 'font-size': 11.5, text: t }, svg);
+      lx += 30 + tx.getComputedTextLength();
+    });
+  }
+
+  /* ---------------- Merge-unmerge vs asymmetric ---------------- */
+  function asym() {
+    const svg = $('#asym'); if (!svg) return;
+    const C = 9; // cell size
+    const frameFill = (f) => ['var(--tok-a)', 'var(--tok-b)', 'var(--tok-c)', 'var(--s5)'][f];
+    const defs = el('defs', {}, svg);
+    const mk = el('marker', { id: 'arr2', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto' }, defs);
+    el('path', { d: 'M0,0 L10,5 L0,10 z', fill: 'var(--text-3)' }, mk);
+    const pat = el('pattern', { id: 'hatch', width: 5, height: 5, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' }, defs);
+    el('rect', { width: 2, height: 5, fill: 'var(--bad)' }, pat);
+    const arrow = (x1, y, x2, label) => {
+      el('path', { d: `M${x1},${y} L${x2},${y}`, stroke: 'var(--text-3)', 'stroke-width': 1.5, 'marker-end': 'url(#arr2)' }, svg);
+      if (label) el('text', { x: (x1 + x2) / 2, y: y - 8, 'text-anchor': 'middle', 'font-size': 11, text: label }, svg);
+    };
+    // strip of tokens: 4 frames x 4 tokens; dropped = index 1 and 3 of frames (not last)
+    const FULL = [], RED = [];
+    for (let f = 0; f < 4; f++) for (let i = 0; i < 4; i++) { FULL.push({ f, i }); if (i % 2 === 0) RED.push({ f, i }); else if (f === 3 && i === 1) RED.push({ f, i }); }
+    // keep 9-ish tokens: simplify to drop i===1 only
+    RED.length = 0; FULL.forEach((t) => { if (t.i !== 1) RED.push(t); });
+    const strip = (x, y, arr, opts = {}) => {
+      arr.forEach((t, k) => {
+        el('rect', { x: x, y: y + k * C, width: C * 2, height: C - 1.5, rx: 2, fill: frameFill(t.f) }, svg);
+        if (opts.bad && t.i === 1) el('rect', { x: x, y: y + k * C, width: C * 2, height: C - 1.5, rx: 2, fill: 'url(#hatch)' }, svg);
+      });
+      if (opts.label) el('text', { x: x + C, y: y - 8, 'text-anchor': 'middle', 'font-size': 11, class: 'mono', text: opts.label }, svg);
+      return y + arr.length * C;
+    };
+    const matrix = (x, y, rows, cols, label, fill) => {
+      el('rect', { x, y, width: cols * C, height: rows * C, rx: 3, fill, 'fill-opacity': .5, stroke: 'var(--border)' }, svg);
+      for (let r = 1; r < rows; r++) el('path', { d: `M${x},${y + r * C} h${cols * C}`, stroke: 'var(--surface)', 'stroke-width': .6 }, svg);
+      for (let c = 1; c < cols; c++) el('path', { d: `M${x + c * C},${y} v${rows * C}`, stroke: 'var(--surface)', 'stroke-width': .6 }, svg);
+      el('text', { x: x + cols * C / 2, y: y - 8, 'text-anchor': 'middle', 'font-size': 11, class: 'mono', text: label }, svg);
+    };
+    // Row 1
+    const y1 = 46;
+    el('text', { x: 16, y: 24, class: 't-strong', 'font-size': 14, text: 'Symmetric: merge → attend → unmerge' }, svg);
+    strip(40, y1, FULL, { label: 'X (SP)' });
+    arrow(70, y1 + 70, 140, 'merge');
+    strip(150, y1 + 18, RED, { label: "X' " });
+    arrow(180, y1 + 70, 230, 'attn');
+    matrix(240, y1 + 18, RED.length, RED.length, "S(P−n) × S(P−n)", 'var(--s2)');
+    arrow(240 + RED.length * C + 10, y1 + 70, 240 + RED.length * C + 60);
+    const ux = 240 + RED.length * C + 70;
+    strip(ux, y1 + 18, RED, { label: 'Y′' });
+    arrow(ux + 30, y1 + 70, ux + 110, 'unmerge');
+    strip(ux + 120, y1, FULL, { label: 'Y (SP)', bad: true });
+    el('text', { x: ux + 160, y: y1 + 50, 'font-size': 12, class: 't-strong', text: 'scatter step' }, svg);
+    el('text', { x: ux + 160, y: y1 + 68, 'font-size': 11.5, text: 'hatched rows get a copy that mixes' }, svg);
+    el('text', { x: ux + 160, y: y1 + 84, 'font-size': 11.5, text: 'frame t and t+1 → blurred depth' }, svg);
+    // Row 2
+    const y2 = 228;
+    el('text', { x: 16, y: 206, class: 't-strong', 'font-size': 14, text: 'TTM: KV-asymmetric (no unmerge)' }, svg);
+    strip(40, y2, FULL, { label: 'X (SP)' });
+    el('path', { d: `M64,${y2 + 20} C 110,${y2 + 20} 110,${y2 + 20} 140,${y2 + 20}`, stroke: 'var(--text-3)', 'stroke-width': 1.5, fill: 'none', 'marker-end': 'url(#arr2)' }, svg);
+    el('text', { x: 100, y: y2 + 12, 'text-anchor': 'middle', 'font-size': 11, text: 'Q = XW_Q' }, svg);
+    arrow(70, y2 + 100, 140, 'merge → K,V');
+    strip(150, y2 + 18, RED, { label: 'K, V' });
+    arrow(180, y2 + 70, 230);
+    matrix(240, y2, FULL.length, RED.length, 'SP × S(P−n)', 'var(--s1)');
+    el('text', { x: 240 + RED.length * C / 2, y: y2 + FULL.length * C + 18, 'text-anchor': 'middle', 'font-size': 11, text: 'rows = all queries' }, svg);
+    arrow(240 + RED.length * C + 10, y2 + 70, 240 + RED.length * C + 60);
+    strip(ux, y2, FULL, { label: 'O (SP)' });
+    el('text', { x: ux + 40, y: y2 + 50, 'font-size': 12, class: 't-strong', text: 'already full length' }, svg);
+    el('text', { x: ux + 40, y: y2 + 68, 'font-size': 11.5, text: 'one output per original token,' }, svg);
+    el('text', { x: ux + 40, y: y2 + 84, 'font-size': 11.5, text: 'no scatter, no contamination' }, svg);
+    // frame legend
+    const lx = 760;
+    ['frame t', 'frame t+1', 'frame t+2', 'frame t+3'].forEach((t, i) => {
+      el('rect', { x: lx, y: 214 + i * 18, width: 12, height: 10, rx: 2, fill: frameFill(i) }, svg);
+      el('text', { x: lx + 18, y: 223 + i * 18, 'font-size': 11, text: t }, svg);
+    });
+  }
+
+  /* ---------------- M1 layers ---------------- */
+  function layers() {
+    const svg = $('#layers'); if (!svg) return;
+    const W = 34, G = 4, X0 = 24, Y = 34;
+    for (let l = 0; l < 24; l++) {
+      const x = X0 + l * (W + G), tap = TAPS.includes(l);
+      el('rect', { x, y: Y, width: W, height: 44, rx: 5, fill: tap ? 'var(--accent)' : 'var(--surface-2)', stroke: tap ? 'none' : 'var(--border)' }, svg);
+      el('text', { x: x + W / 2, y: Y + 27, 'text-anchor': 'middle', 'font-size': tap ? 12 : 10, class: 'mono', style: tap ? 'fill:#fff;font-weight:600' : '', text: tap ? 'Z' + l : 'None' }, svg);
+      el('text', { x: x + W / 2, y: Y + 62, 'text-anchor': 'middle', 'font-size': 10, class: 'mono t-muted', text: l }, svg);
+    }
+    el('text', { x: X0, y: 20, 'font-size': 13, class: 't-strong', text: 'Stored intermediates {Zℓ}' }, svg);
+    el('text', { x: X0, y: 130, 'font-size': 13, text: '4 of 24 kept  ·  20 replaced by None  ·  ≈ 870 MB saved at S = 20 (linear in S)  ·  outputs unchanged' }, svg);
+  }
+
+  /* ---------------- M5 epipolar demo ---------------- */
+  function epipolar() {
+    const cv = $('#epi-canvas'); if (!cv) return;
+    const ctx = cv.getContext('2d');
+    const COLS = 15, ROWS = 10, PS = 28, PW = COLS * PS, PH = ROWS * PS, GAPX = 40, TOP = 26;
+    const LW = PW * 2 + GAPX, LH = PH + TOP + 4;
+    const SHIFT = [2, 1]; // world patch at p in frame t appears at p - SHIFT in frame t+1
+    const sigIn = $('#sig-in'), note = $('#epi-note');
+    // texture class in world patch coords
+    const cls = (wx, wy) => {
+      if (wy < 2) return 'sky';
+      if (wy >= 10) return 'ground';
+      if (wx % 3 === 1 && wy % 2 === 1) return 'window';
+      return 'wall';
+    };
+    let hover = null;
+    // find a default patch where appearance-only is wrong
+    function evaluate(px, py, sigma) {
+      const wx = px, wy = py, c = cls(wx, wy);
+      const tx = px - SHIFT[0], ty = py - SHIFT[1];
+      let bestA = null, bestG = null;
+      const gates = [];
+      const ux = SHIFT[0] / Math.hypot(...SHIFT), uy = SHIFT[1] / Math.hypot(...SHIFT);
+      const cxp = (px + .5) * PS, cyp = (py + .5) * PS;
+      for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+        const qwx = x + SHIFT[0], qwy = y + SHIFT[1];
+        let s;
+        if (qwx === wx && qwy === wy) s = 0.90;
+        else if (cls(qwx, qwy) === c) s = 0.84 + 0.13 * hash(px, py, x, y);
+        else s = 0.15 + 0.3 * hash(px, py, x, y);
+        const dx = (x + .5) * PS - cxp, dy = (y + .5) * PS - cyp;
+        const d = Math.abs(dx * uy - dy * ux);
+        const g = Math.exp(-(d * d) / (sigma * sigma));
+        gates.push(g);
+        if (!bestA || s > bestA.s) bestA = { x, y, s };
+        if (!bestG || s * g > bestG.s) bestG = { x, y, s: s * g };
+      }
+      const inView = tx >= 0 && ty >= 0 && tx < COLS && ty < ROWS;
+      return { bestA, bestG, gates, truth: inView ? { x: tx, y: ty } : null };
+    }
+    for (let y = 3; y < ROWS && !hover; y++) for (let x = 5; x < COLS && !hover; x++) {
+      if (cls(x, y) !== 'window') continue;
+      const e = evaluate(x, y, 0.05 * PW);
+      if (e.truth && (e.bestA.x !== e.truth.x || e.bestA.y !== e.truth.y) && e.bestG.x === e.truth.x && e.bestG.y === e.truth.y) hover = { x, y };
+    }
+    hover = hover || { x: 7, y: 5 };
+
+    function patchColor(c, wx, wy) {
+      const v = hash(wx, wy) * 0.08;
+      if (c === 'sky') return `hsl(205 70% ${82 - wy * 4 - v * 50}%)`;
+      if (c === 'ground') return `hsl(95 25% ${48 - v * 40}%)`;
+      if (c === 'window') return `hsl(215 45% ${30 + v * 40}%)`;
+      return `hsl(28 30% ${70 - v * 60}%)`;
+    }
+    function drawFrame(ox, offx, offy, title) {
+      ctx.fillStyle = css('--text-2'); ctx.font = '600 13px Inter, sans-serif';
+      ctx.fillText(title, ox, 16);
+      for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+        const wx = x + offx, wy = y + offy;
+        ctx.fillStyle = patchColor(cls(wx, wy), wx, wy);
+        ctx.fillRect(ox + x * PS, TOP + y * PS, PS, PS);
+      }
+      ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.lineWidth = 1;
+      for (let x = 0; x <= COLS; x++) { ctx.beginPath(); ctx.moveTo(ox + x * PS + .5, TOP); ctx.lineTo(ox + x * PS + .5, TOP + PH); ctx.stroke(); }
+      for (let y = 0; y <= ROWS; y++) { ctx.beginPath(); ctx.moveTo(ox, TOP + y * PS + .5); ctx.lineTo(ox + PW, TOP + y * PS + .5); ctx.stroke(); }
+    }
+    function ring(ox, p, color, r) {
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.arc(ox + (p.x + .5) * PS, TOP + (p.y + .5) * PS, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.stroke();
+    }
+    function render() {
+      const dpr = window.devicePixelRatio || 1, w = cv.clientWidth;
+      cv.width = Math.round(w * dpr); cv.height = Math.round(w * LH / LW * dpr);
+      cv.style.height = (w * LH / LW) + 'px';
+      const k = cv.width / LW;
+      ctx.setTransform(k, 0, 0, k, 0, 0);
+      ctx.clearRect(0, 0, LW, LH);
+      const sigma = +sigIn.value * PW;
+      $('#sig-out').textContent = (+sigIn.value).toFixed(2) + ' W';
+      const R = PW + GAPX;
+      drawFrame(0, 0, 0, 'frame t  (hover a patch)');
+      drawFrame(R, SHIFT[0], SHIFT[1], 'frame t+1');
+      const e = evaluate(hover.x, hover.y, sigma);
+      // gate heat overlay
+      e.gates.forEach((g, i) => {
+        const x = i % COLS, y = Math.floor(i / COLS);
+        ctx.fillStyle = `rgba(245,213,71,${(g * 0.55).toFixed(3)})`;
+        ctx.fillRect(R + x * PS, TOP + y * PS, PS, PS);
+      });
+      // epipolar line
+      ctx.save(); ctx.beginPath(); ctx.rect(R, TOP, PW, PH); ctx.clip();
+      const cxp = (hover.x + .5) * PS, cyp = (hover.y + .5) * PS, L = 2000, u = Math.hypot(...SHIFT);
+      ctx.strokeStyle = '#f5d547'; ctx.lineWidth = 2; ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(R + cxp - L * SHIFT[0] / u, TOP + cyp - L * SHIFT[1] / u); ctx.lineTo(R + cxp + L * SHIFT[0] / u, TOP + cyp + L * SHIFT[1] / u); ctx.stroke();
+      ctx.restore();
+      // selected patch
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+      ctx.strokeRect(hover.x * PS + 1.5, TOP + hover.y * PS + 1.5, PS - 3, PS - 3);
+      const same = e.bestA.x === e.bestG.x && e.bestA.y === e.bestG.y;
+      ring(R, e.bestA, css('--bad'), same ? 17 : 13);
+      ring(R, e.bestG, css('--s1'), 12);
+      const ok = (p) => e.truth && p.x === e.truth.x && p.y === e.truth.y;
+      if (!e.truth) note.textContent = 'This patch\'s twin has left the view in frame t+1 — the gate only keeps candidates near the line, and merging confidence stays low.';
+      else if (ok(e.bestA) && ok(e.bestG)) note.textContent = 'Both pick the true twin here — the gate never hurts an unambiguous match.';
+      else if (ok(e.bestG)) note.textContent = `Appearance alone picks a look-alike ${cls(hover.x, hover.y)} patch off the line (red). The epipolar gate suppresses it and recovers the true twin (blue).`;
+      else note.textContent = 'With a very wide σ the gate is almost all-ones, so M5 falls back to plain appearance matching (M1+M2).';
+    }
+    function pick(ev) {
+      const r = cv.getBoundingClientRect(), k = LW / r.width;
+      const x = Math.floor(((ev.clientX - r.left) * k) / PS), y = Math.floor(((ev.clientY - r.top) * k - TOP) / PS);
+      if (x >= 0 && x < COLS && y >= 0 && y < ROWS && (x !== hover.x || y !== hover.y)) { hover = { x, y }; render(); }
+    }
+    cv.addEventListener('pointermove', pick);
+    cv.addEventListener('pointerdown', pick);
+    sigIn.addEventListener('input', render);
+    window.addEventListener('resize', render);
+    matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
+    render();
+  }
+
+  /* ---------------- Results chart ---------------- */
+  // Table 1 of the TTM draft (Tanks and Temples, H100, BF16)
+  const METHODS = [
+    { key: 'ttm', name: 'TTM (Ours)', color: 'var(--s1)' },
+    { key: 'van', name: 'Vanilla VGGT', color: 'var(--s2)' },
+    { key: 'noepi', name: 'TTM w/o epi.', color: 'var(--s3)' },
+    { key: 'lite', name: 'LiteVGGT', color: 'var(--s4)' },
+  ];
+  const SCENES = ['Barn', 'Caterpillar', 'Ignatius', 'Meetingroom', 'Truck', 'Average'];
+  // [f1x5, f1x10, auc30, time, mem]
+  const DATA = {
+    Barn: { van: [48.1, 72.7, 91.2, 319.5, 83.7], ttm: [50.1, 74.0, 91.2, 41.2, 38.5], noepi: [42.0, 70.8, 89.0, 29.6, 35.8], lite: [28.1, 50.2, 89.2, 10.7, 17.9] },
+    Caterpillar: { van: [32.6, 50.0, 93.5, 279.5, 78.5], ttm: [33.0, 50.3, 93.2, 36.5, 36.4], noepi: [28.1, 46.8, 91.6, 26.3, 33.9], lite: [35.9, 53.3, 91.8, 9.9, 16.7] },
+    Ignatius: { van: [66.7, 78.1, 98.1, 132.5, 55.5], ttm: [67.2, 78.5, 98.1, 19.2, 27.1], noepi: [51.6, 66.4, 97.0, 13.7, 25.4], lite: [31.3, 52.6, 99.2, 7.1, 12.2] },
+    Meetingroom: { van: [58.1, 72.4, 97.3, 262.1, 76.2], ttm: [57.8, 72.1, 97.0, 34.8, 35.5], noepi: [57.6, 74.0, 95.7, 24.7, 33.0], lite: [44.4, 65.0, 92.9, 9.7, 16.4] },
+    Truck: { van: [69.1, 84.4, 99.6, 120.9, 53.2], ttm: [69.1, 84.3, 99.6, 17.8, 26.2], noepi: [59.9, 80.2, 99.2, 12.7, 24.5], lite: [39.6, 60.4, 99.2, 7.0, 11.9] },
+    Average: { van: [54.9, 71.5, 95.9, 222.9, 69.4], ttm: [55.4, 71.8, 95.8, 29.9, 32.7], noepi: [47.8, 67.6, 94.5, 21.4, 30.5], lite: [35.9, 56.3, 94.4, 8.9, 15.0] },
+  };
+  const METRICS = [
+    { name: 'F1 @×5 ↑', unit: '%' }, { name: 'F1 @×10 ↑', unit: '%' }, { name: 'Pose AUC@30° ↑', unit: '%' },
+    { name: 'Time ↓', unit: 's' }, { name: 'Peak memory ↓', unit: 'GB' },
+  ];
+  const niceMax = (v) => { const p = Math.pow(10, Math.floor(Math.log10(v))); const m = v / p; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10) * p; };
+  const barPath = (x, y, w, h, r = 4) => { r = Math.min(r, h, w / 2); return `M${x},${y + h} V${y + r} Q${x},${y} ${x + r},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${y + h} Z`; };
+
+  function legend(container, items) {
+    container.innerHTML = items.map((m) => `<span><i class="key" style="background:${m.color}"></i>${m.name}</span>`).join('');
+  }
+
+  function results() {
+    const svg = $('#res-chart'); if (!svg) return;
+    const tabs = $('#metric-tabs');
+    legend($('#res-legend'), METHODS);
+    let metric = 0;
+    METRICS.forEach((m, i) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.role = 'tab'; b.textContent = m.name; b.setAttribute('aria-selected', i === 0);
+      b.addEventListener('click', () => { metric = i; [...tabs.children].forEach((c, j) => c.setAttribute('aria-selected', j === i)); draw(); });
+      tabs.appendChild(b);
+    });
+    const W = 900, H = 320, ML = 44, MR = 8, MT = 16, MB = 36;
+    function draw() {
+      svg.innerHTML = '';
+      const vals = SCENES.flatMap((s) => METHODS.map((m) => DATA[s][m.key][metric]));
+      const max = niceMax(Math.max(...vals));
+      const y = (v) => MT + (H - MT - MB) * (1 - v / max);
+      for (let i = 0; i <= 4; i++) {
+        const v = max * i / 4;
+        el('path', { d: `M${ML},${y(v)} H${W - MR}`, stroke: 'var(--grid)', 'stroke-width': 1 }, svg);
+        el('text', { x: ML - 8, y: y(v) + 4, 'text-anchor': 'end', 'font-size': 11, class: 't-muted', text: +v.toFixed(1) }, svg);
+      }
+      const gw = (W - ML - MR) / SCENES.length, bw = 22, bg = 2, total = METHODS.length * bw + (METHODS.length - 1) * bg;
+      SCENES.forEach((s, si) => {
+        const gx = ML + si * gw + (gw - total) / 2;
+        el('text', { x: ML + si * gw + gw / 2, y: H - 12, 'text-anchor': 'middle', 'font-size': 12, class: s === 'Average' ? 't-strong' : '', text: s }, svg);
+        METHODS.forEach((m, mi) => {
+          const v = DATA[s][m.key][metric], x = gx + mi * (bw + bg);
+          const p = el('path', { d: barPath(x, y(v), bw, y(0) - y(v)), fill: m.color }, svg);
+          const hit = el('rect', { x: x - 1, y: MT, width: bw + 2, height: y(0) - MT, fill: 'transparent' }, svg);
+          hit.addEventListener('pointermove', (ev) => { p.setAttribute('fill-opacity', .75); showTip(`<b>${m.name}</b> · ${s}<br>${METRICS[metric].name.replace(/ [↑↓]/, '')}: <b>${v} ${METRICS[metric].unit}</b>`, ev); });
+          hit.addEventListener('pointerleave', () => { p.setAttribute('fill-opacity', 1); hideTip(); });
+          if (s === 'Average' && m.key === 'ttm') {
+            el('text', { x: x + bw / 2, y: y(v) - 5, 'text-anchor': 'middle', 'font-size': 10.5, class: 't-strong', text: v }, svg);
+          }
+        });
+      });
+      el('path', { d: `M${ML},${y(0)} H${W - MR}`, stroke: 'var(--text-3)', 'stroke-width': 1 }, svg);
+    }
+    draw();
+    // table view
+    const tbl = $('#res-table');
+    tbl.innerHTML = '<thead><tr><th>Scene</th><th>Method</th><th>F1 ×5</th><th>F1 ×10</th><th>AUC@30°</th><th>Time (s)</th><th>Mem (GB)</th></tr></thead><tbody>' +
+      SCENES.map((s) => ['van', 'ttm', 'noepi', 'lite'].map((k, i) => {
+        const m = METHODS.find((mm) => mm.key === k);
+        return `<tr class="${k === 'ttm' ? 'ours' : ''}"><td>${i === 0 ? s : ''}</td><td>${m.name}</td>${DATA[s][k].map((v) => `<td>${v}</td>`).join('')}</tr>`;
+      }).join('')).join('') + '</tbody>';
+  }
+
+  /* ---------------- Runtime breakdown ---------------- */
+  function runtime() {
+    const svg = $('#runtime'); if (!svg) return;
+    const SEG = [
+      { name: 'Epipolar pre-pass (optional)', v: 7.03, sub: 'Pass 0 poses 2.46 s · epipolar scores 4.57 s', color: 'var(--s4)' },
+      { name: 'Embed + frame attn', v: 1.25, sub: 'patch embedding 0.38 s · frame attention 0.87 s', color: 'var(--s3)' },
+      { name: 'Global attn (full layers)', v: 4.62, sub: 'early + tap layers', color: 'var(--s2)' },
+      { name: 'Merge search', v: 0.46, sub: 'patch matching 0.44 s · pos. emb. rebuild 0.02 s', color: 'var(--s5)' },
+      { name: 'KV-asymmetric attn', v: 6.53, sub: '20 merged global layers', color: 'var(--s1)' },
+      { name: 'Heads', v: 0.61, sub: 'depth 0.34 · point 0.26 · camera 0.01 s', color: 'var(--s6)' },
+    ];
+    legend($('#rt-legend'), SEG);
+    const total = SEG.reduce((a, s) => a + s.v, 0), X0 = 0, W = 900, Y = 30, H = 40, GAP = 2;
+    let x = X0;
+    SEG.forEach((s, i) => {
+      const w = (W - GAP * (SEG.length - 1)) * s.v / total;
+      const r = el('rect', { x, y: Y, width: w, height: H, rx: i === 0 || i === SEG.length - 1 ? 4 : 0, fill: s.color }, svg);
+      r.addEventListener('pointermove', (ev) => { r.setAttribute('fill-opacity', .8); showTip(`<b>${s.name}</b>: ${s.v.toFixed(2)} s (${(100 * s.v / total).toFixed(1)}%)<br>${s.sub}`, ev); });
+      r.addEventListener('pointerleave', () => { r.setAttribute('fill-opacity', 1); hideTip(); });
+      if (w > 70) el('text', { x: x + 8, y: Y + H / 2 + 4, 'font-size': 12, style: 'fill:#fff;font-weight:600;pointer-events:none', text: s.v.toFixed(2) + ' s' }, svg);
+      x += w + GAP;
+    });
+    el('text', { x: 0, y: 18, 'font-size': 12, class: 't-strong', text: `Total ${total.toFixed(2)} s  ·  core method only ${(total - 7.03).toFixed(2)} s` }, svg);
+    el('text', { x: 0, y: Y + H + 24, 'font-size': 11.5, class: 't-muted', text: 'Hover segments for details. Vanilla VGGT on the same scene: 132.5 s.' }, svg);
+  }
+
+  /* ---------------- Layer schedule ---------------- */
+  function schedule() {
+    const svg = $('#sched'); if (!svg) return;
+    const inMid = (l) => l >= 11 && l <= 15;
+    const base = (l) => (l < 5 || TAPS.includes(l)) ? 0 : 1;
+    const SCHED = [
+      { name: 'Uniform', f: (l) => base(l) },
+      { name: 'Mid-conservative (probe)', f: (l) => base(l) * (inMid(l) ? 0.3 : 1) },
+      { name: 'Mid-aggressive', f: (l) => base(l) * (inMid(l) ? 1 : 0.3) },
+    ];
+    const tabs = $('#sched-tabs');
+    let cur = 1;
+    SCHED.forEach((s, i) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.role = 'tab'; b.textContent = s.name; b.setAttribute('aria-selected', i === cur);
+      b.addEventListener('click', () => { cur = i; [...tabs.children].forEach((c, j) => c.setAttribute('aria-selected', j === i)); draw(); });
+      tabs.appendChild(b);
+    });
+    const W = 900, H = 200, ML = 40, MT = 14, MB = 40;
+    const bars = [];
+    const y = (v) => MT + (H - MT - MB) * (1 - v);
+    [0, 0.5, 1].forEach((v) => {
+      el('path', { d: `M${ML},${y(v)} H${W}`, stroke: 'var(--grid)' }, svg);
+      el('text', { x: ML - 8, y: y(v) + 4, 'text-anchor': 'end', 'font-size': 11, class: 't-muted', text: v }, svg);
+    });
+    el('text', { x: ML - 30, y: MT + 60, 'font-size': 11, class: 't-muted', transform: `rotate(-90 ${ML - 30} ${MT + 60})`, 'text-anchor': 'middle', text: 'αℓ' }, svg);
+    const bw = 24, slot = (W - ML) / 24;
+    for (let l = 0; l < 24; l++) {
+      const x = ML + l * slot + (slot - bw) / 2;
+      bars.push(el('path', { fill: 'var(--s1)' }, svg));
+      el('text', { x: x + bw / 2, y: H - MB + 16, 'text-anchor': 'middle', 'font-size': 10, class: TAPS.includes(l) ? 't-strong mono' : 'mono t-muted', text: l }, svg);
+      if (TAPS.includes(l) || l < 5) el('text', { x: x + bw / 2, y: y(0) - 6, 'text-anchor': 'middle', 'font-size': 9, class: 't-muted', text: TAPS.includes(l) ? 'tap' : 'full' }, svg);
+    }
+    el('rect', { x: ML + 11 * slot, y: MT - 4, width: 5 * slot, height: H - MT - MB + 4, fill: 'var(--accent)', 'fill-opacity': .07 }, svg).parentNode.insertBefore(svg.lastChild, svg.firstChild);
+    el('text', { x: ML + 13.5 * slot, y: H - 6, 'text-anchor': 'middle', 'font-size': 11, text: 'heterogeneous mid-range (probe)' }, svg);
+    el('path', { d: `M${ML},${y(0)} H${W}`, stroke: 'var(--text-3)' }, svg);
+    function draw() {
+      for (let l = 0; l < 24; l++) {
+        const v = SCHED[cur].f(l), x = ML + l * slot + (slot - bw) / 2;
+        bars[l].setAttribute('d', v > 0 ? barPath(x, y(v), bw, y(0) - y(v)) : '');
+      }
+    }
+    draw();
+  }
+
+  function init() {
+    renderMath();
+    hero(); explorer(); pipeline(); asym(); layers(); epipolar(); results(); runtime(); schedule();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+})();

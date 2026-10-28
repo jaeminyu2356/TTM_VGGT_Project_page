@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TTM: Temporal Token Merging</title>
+  <meta name="description" content="TTM: a training-free add-on that lets VGGT reconstruct 3D from long videos by merging redundant tokens across frames.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <link rel="stylesheet" href="static/css/style.css">
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Training-free · Plug-in for VGGT · Video → 3D</p>
+    <h1><span class="accent">TTM</span>: Training-free Temporal Token Merging<br>for Memory-Efficient Video 3D Reconstruction</h1>
+    <!-- TODO: replace with your name / affiliation -->
+    <p class="authors"><a href="#">Your Name</a></p>
+    <p class="affil">Your Affiliation</p>
+    <div class="buttons">
+      <a class="btn" href="static/paper/TTM_paper.pdf">Paper (PDF)</a>
+      <a class="btn" href="#">Code (coming soon)</a>
+      <a class="btn ghost" href="#bibtex">BibTeX</a>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <!-- ===== Teaser animation ===== -->
+  <section class="wrap teaser">
+    <figure class="card">
+      <svg id="hero-anim" viewBox="0 0 960 380" role="img" aria-label="Animation: tokens of adjacent frames are matched, redundant ones are dropped from keys and values, and the attention matrix shrinks from N by N to N by N_red."></svg>
+      <figcaption>
+        <button id="hero-toggle" class="chip" type="button">Pause</button>
+        <span id="hero-caption">Adjacent video frames are almost identical. TTM matches each token to its twin in the next frame,
+        drops the redundant copy from the <b>keys/values</b>, and keeps every token as a <b>query</b> — so the attention map
+        shrinks from <i>N×N</i> to <i>N×N<sub>red</sub></i> with no unmerge step.</span>
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ===== Headline numbers ===== -->
+  <section class="wrap">
+    <div class="stats">
+      <div class="stat"><div class="stat-label">Frames on a 16 GB GPU</div><div class="stat-value">30 → 100+</div><div class="stat-sub">RTX 4080, vanilla OOMs at S = 30</div></div>
+      <div class="stat"><div class="stat-label">Inference time (T&amp;T avg.)</div><div class="stat-value">7.5× faster</div><div class="stat-sub">222.9 s → 29.9 s, H100 BF16</div></div>
+      <div class="stat"><div class="stat-label">Peak memory (T&amp;T avg.)</div><div class="stat-value">2.1× less</div><div class="stat-sub">69.4 GB → 32.7 GB</div></div>
+      <div class="stat"><div class="stat-label">Reconstruction F1 @×5</div><div class="stat-value">55.4 <span class="muted">vs 54.9</span></div><div class="stat-sub">on par with vanilla VGGT</div></div>
+    </div>
+  </section>
+
+  <!-- ===== Abstract ===== -->
+  <section class="wrap prose" id="abstract">
+    <h2>Abstract</h2>
+    <p>Recent video-to-3D foundation models such as VGGT achieve state-of-the-art reconstruction by jointly attending to all
+      input frames, but the resulting global attention scales <b>quadratically</b> with sequence length and exhausts a 16 GB GPU
+      at roughly thirty frames. We present <b>TTM (Temporal Token Merging)</b>, a fully training-free add-on that compresses
+      cross-frame attention through three complementary techniques:</p>
+    <ul class="modules">
+      <li><span class="tag">M1</span><b>Layer-Selective Storage</b> keeps intermediate features only at the four layers the prediction heads read, removing ~80% of stored activations.</li>
+      <li><span class="tag">M2</span><b>KV-Asymmetric Merge</b> attends with full-resolution queries against merged keys/values — no error-prone unmerge step, no token contamination.</li>
+      <li><span class="tag">M5</span><b>Epipolar-Constrained Merge</b> gates token similarity by the epipolar residual, using camera poses from a cheap low-resolution pre-pass of the same model.</li>
+    </ul>
+    <p>All components reuse the frozen VGGT weights, need no fine-tuning, and stack with efficient-attention kernels such as FlashAttention.</p>
+  </section>
+
+  <!-- ===== Problem ===== -->
+  <section class="wrap prose" id="problem">
+    <h2>The memory wall</h2>
+    <p>VGGT alternates <i>frame attention</i> (tokens of one image) with <i>global attention</i> over all
+      <span class="m">N = S\cdot P</span> tokens of all <span class="m">S</span> frames. That global step is what makes the
+      predictions multi-view consistent, but its score map is <span class="m">N\times N</span>: doubling the number of frames
+      quadruples the cost. Drag the sliders to see how big the map gets at 518 px input
+      (<span class="m">P = 1369</span> patches + 5 special tokens).</p>
+  </section>
+  <section class="wrap">
+    <div class="card explorer">
+      <div class="controls">
+        <label>Frames <i>S</i> <output id="s-out">60</output>
+          <input id="s-in" type="range" min="2" max="200" value="60"></label>
+        <label>Merge ratio <i>r</i> <output id="r-out">0.50</output>
+          <input id="r-in" type="range" min="0" max="0.5" step="0.05" value="0.5"></label>
+      </div>
+      <div class="explorer-body">
+        <svg id="matrix-viz" viewBox="0 0 520 300" role="img" aria-label="Attention score map size, vanilla versus TTM"></svg>
+        <div class="explorer-readout" id="matrix-readout"></div>
+      </div>
+      <p class="note">Analytic count of attention scores for one head of one merged global layer (BF16). Kernels like FlashAttention avoid
+        materialising this map, but the compute still scales the same way — and TTM's savings multiply with theirs.</p>
+    </div>
+  </section>
+
+  <!-- ===== Method overview ===== -->
+  <section class="wrap prose" id="method">
+    <h2>Method</h2>
+    <p>TTM only touches VGGT's alternating-attention loop. Frames are tokenised as usual; inside the 24 blocks, the global
+      attention of every non-tap layer from layer 5 on uses merged keys/values, only the four layers the DPT heads tap are stored,
+      and an optional low-resolution pre-pass supplies the camera poses that drive the epipolar gate.</p>
+  </section>
+  <section class="wrap">
+    <figure class="card">
+      <svg id="pipeline" viewBox="0 0 960 300" role="img" aria-label="Pipeline overview"></svg>
+      <figcaption>Overview. Blue blocks run KV-asymmetric global attention; outlined blocks (4, 11, 17, 23) are the DPT taps that keep full attention and are the only ones stored (M1). Layers 0–4 stay full to protect fine edges.</figcaption>
+    </figure>
+  </section>
+
+  <!-- Bipartite merging -->
+  <section class="wrap prose">
+    <h3>Cross-frame bipartite token merging</h3>
+    <p>For each pair of adjacent frames <span class="m">(t, t{+}1)</span> we project patch tokens with VGGT's own frozen key
+      projection, L2-normalise, and match every even-indexed source token in frame <span class="m">t</span> to its most similar
+      token in frame <span class="m">t{+}1</span>:</p>
+    <div class="eq" data-tex="j^\star(i) = \arg\max_j \,\langle \hat K_t[i],\, \hat K_{t+1}[j] \rangle, \qquad n = \lfloor P_{\text{patch}}\cdot r(\Delta t)\rfloor,\quad r(\Delta t) = r_{\max}\, e^{-\lambda \Delta t_{\text{norm}}}"></div>
+    <p>The top-<span class="m">n</span> sources are merged. Because the score lives in the attention's own key space, no extra
+      network is needed. We use <b>hard-kept</b> merging: soft averaging leaks frame <span class="m">t{+}1</span> content into
+      frame <span class="m">t</span>'s slot and blurs depth.</p>
+  </section>
+
+  <!-- M2 -->
+  <section class="wrap prose" id="m2">
+    <h3><span class="tag">M2</span> KV-Asymmetric Merge — no unmerge</h3>
+    <p>The usual recipe is <i>merge → attend → unmerge</i>: the shortened sequence must be scattered back to every original
+      position afterwards, and that broadcast bakes frame <span class="m">t{+}1</span> features into frame
+      <span class="m">t</span>'s positions. But the quadratic cost comes from the <b>key/value length</b>, not the query length —
+      each query yields exactly one output regardless of how many keys it sees. So we compute queries from the full sequence and
+      keys/values from the merged one:</p>
+    <div class="eq" data-tex="Q = X W_Q,\quad K = X_{\text{red}} W_K,\quad V = X_{\text{red}} W_V,\qquad O = \operatorname{softmax}\!\Big(\tfrac{QK^\top}{\sqrt d}\Big)V \in \mathbb{R}^{SP\times C}"></div>
+    <p>The output already has one row per original token, so the heads get exactly what they expect.
+      Cost drops from <span class="m">O((SP)^2)</span> to <span class="m">O(SP\cdot S(P-n))</span>.</p>
+  </section>
+  <section class="wrap">
+    <figure class="card">
+      <svg id="asym" viewBox="0 0 960 360" role="img" aria-label="Merge-unmerge versus KV-asymmetric attention"></svg>
+      <figcaption>Top: symmetric merge–unmerge needs a scatter step that contaminates dropped positions. Bottom: TTM keeps all queries, shrinks only K/V, and the output is full-length by construction.</figcaption>
+    </figure>
+  </section>
+
+  <!-- M1 -->
+  <section class="wrap prose" id="m1">
+    <h3><span class="tag">M1</span> Layer-Selective Storage</h3>
+    <p>VGGT keeps the output of all 24 blocks for its heads, but the DPT depth/point heads only read
+      <span class="m">\mathcal T = \{4, 11, 17, 23\}</span> and the camera head only reads the last one. Storing
+      <code>None</code> for the other 20 is a one-line change that frees ~870 MB at <span class="m">S=20</span>, growing linearly with
+      <span class="m">S</span>, with bit-identical outputs.</p>
+  </section>
+  <section class="wrap">
+    <figure class="card">
+      <svg id="layers" viewBox="0 0 960 150" role="img" aria-label="24 layers, only four stored"></svg>
+    </figure>
+  </section>
+
+  <!-- M5 -->
+  <section class="wrap prose" id="m5">
+    <h3><span class="tag">M5</span> Epipolar-Constrained Merge</h3>
+    <p>Appearance alone is ambiguous: a facade full of identical windows gives many look-alike keys. Geometry is not — the
+      true twin of a patch must lie on its <b>epipolar line</b> in the next frame. M5 gates the similarity with the distance
+      to that line:</p>
+    <div class="eq" data-tex="s_{ij} = s^{\cos}_{ij}\cdot \exp\!\Big(-\frac{d_{\text{epi}}(i,j)^2}{\sigma^2}\Big),\qquad F_{t,t+1} = K_{t+1}^{-\top}[t_{\text{rel}}]_\times R_{\text{rel}} K_t^{-1}"></div>
+    <p>The poses come from VGGT itself: a <b>Pass 0</b> at 224 px (TTM with M1+M2) costs about a tenth of the main pass;
+      its poses build <span class="m">F</span>, and <b>Pass 1</b> at 518 px reuses the same gates in all 20 merge layers.
+      As <span class="m">\sigma\to\infty</span> the gate becomes all-ones and M5 reduces exactly to M1+M2 (checked numerically).
+      <b>Hover a patch on the left</b>:</p>
+  </section>
+  <section class="wrap">
+    <div class="card epi">
+      <div class="controls">
+        <label>Gate width σ <output id="sig-out">0.05 W</output>
+          <input id="sig-in" type="range" min="0.01" max="0.5" step="0.01" value="0.05"></label>
+        <div class="legend-inline">
+          <span><i class="key ring-wrong"></i>Appearance-only best match</span>
+          <span><i class="key ring-right"></i>With epipolar gate</span>
+          <span><i class="key line-epi"></i>Epipolar line</span>
+        </div>
+      </div>
+      <canvas id="epi-canvas" aria-label="Interactive epipolar gating demo"></canvas>
+      <p class="note" id="epi-note"></p>
+    </div>
+  </section>
+
+  <!-- Results -->
+  <section class="wrap prose" id="results">
+    <h2>Results</h2>
+    <p>Tanks and Temples training set (5 scenes), single H100, BF16. Reconstruction F1 at ×5 / ×10 of the scene threshold,
+      pose AUC@30°, forward-pass time and peak memory.</p>
+  </section>
+  <section class="wrap">
+    <div class="card">
+      <div class="tabs" id="metric-tabs" role="tablist"></div>
+      <div class="legend" id="res-legend"></div>
+      <svg id="res-chart" viewBox="0 0 900 320" role="img" aria-label="Per-scene results chart"></svg>
+      <details class="table-view">
+        <summary>Show full table</summary>
+        <div class="table-scroll"><table id="res-table"></table></div>
+      </details>
+    </div>
+  </section>
+
+  <section class="wrap prose">
+    <h3>Where does the time go?</h3>
+    <p>Runtime breakdown on Ignatius (263 frames, H100, BF16). The epipolar pre-pass is optional; the core method alone takes 13.5 s.</p>
+  </section>
+  <section class="wrap">
+    <div class="card">
+      <div class="legend" id="rt-legend"></div>
+      <svg id="runtime" viewBox="0 0 900 100" role="img" aria-label="Runtime breakdown"></svg>
+    </div>
+  </section>
+
+  <!-- Follow-up -->
+  <section class="wrap prose" id="followup">
+    <h2>Follow-up: does each layer need the same budget?</h2>
+    <p>Mid-depth global blocks attend in a sharply <i>heterogeneous</i> way — each query latches onto a small, distinct set of
+      keys. A one-forward <b>attention-heterogeneity probe</b> (per-query coverage <span class="m">c_\pi</span> and top-k Jaccard
+      distance) ranks blocks without labels or per-layer sweeps, and suggests a per-block multiplier
+      <span class="m">r^{(\ell)} = \alpha_\ell\, r_{\max}</span> that merges less where correspondence is concentrated.</p>
+  </section>
+  <section class="wrap">
+    <div class="card">
+      <div class="tabs" id="sched-tabs" role="tablist"></div>
+      <svg id="sched" viewBox="0 0 900 200" role="img" aria-label="Per-layer merge schedule"></svg>
+      <p class="note">Honest finding: on Tanks and Temples all schedules land within ~0.2 F1 of each other (avg. F1@×5: uniform 54.63,
+        mid-conservative 54.55, mid-aggressive 54.41, U-shape 54.61). KV-asymmetric merging is robust to <i>where</i> it is applied —
+        the budget matters more than its shape.</p>
+    </div>
+  </section>
+
+  <!-- Limitations -->
+  <section class="wrap prose" id="limits">
+    <h2>Limitations</h2>
+    <ul>
+      <li>Merging relies on temporal redundancy; sparse, wide-baseline image sets offer less to merge.</li>
+      <li>The DPT tap layers keep full attention, so their cost is not reduced.</li>
+      <li>M5 adds a second (low-resolution) forward pass; with degenerate relative pose the gate falls back to 1.</li>
+    </ul>
+  </section>
+
+  <section class="wrap prose" id="bibtex">
+    <h2>BibTeX</h2>
+    <pre><code>@misc{ttm2026,
+  title  = {TTM: Training-free Temporal Token Merging for
+            Memory-Efficient Video 3D Reconstruction},
+  author = {Your Name},
+  year   = {2026}
+}</code></pre>
+  </section>
+
+</main>
+
+<footer class="wrap footer">
+  <p>Built on <a href="https://github.com/facebookresearch/vggt">VGGT</a>. Page template written from scratch; feel free to reuse.</p>
+</footer>
+
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="static/js/main.js"></script>
+</body>
+</html>
