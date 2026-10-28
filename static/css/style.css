@@ -47,7 +47,8 @@
 html { scroll-behavior: smooth; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
-  font: 16px/1.65 Inter, system-ui, -apple-system, "Noto Sans KR", sans-serif;
+  font: 16px/1.75 Inter, "Noto Sans KR", system-ui, -apple-system, sans-serif;
+  word-break: keep-all;
   -webkit-font-smoothing: antialiased;
 }
 a { color: var(--accent); text-decoration: none; }
@@ -146,8 +147,11 @@ th, td { padding: 6px 10px; text-align: right; border-bottom: 1px solid var(--bo
 th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
 th { color: var(--text-2); font-weight: 600; }
 tr.ours td { font-weight: 600; }
+table.compare th, table.compare td { text-align: center; }
+table.compare th:first-child, table.compare td:first-child { text-align: left; color: var(--text-2); }
+table.compare th:last-child, table.compare td:last-child { background: var(--accent-soft); }
 
-svg text { font-family: Inter, system-ui, sans-serif; fill: var(--text-2); }
+svg text { font-family: Inter, "Noto Sans KR", system-ui, sans-serif; fill: var(--text-2); }
 svg .t-strong { fill: var(--text); font-weight: 600; }
 svg .t-muted { fill: var(--text-3); }
 svg .mono { font-family: "JetBrains Mono", monospace; }
