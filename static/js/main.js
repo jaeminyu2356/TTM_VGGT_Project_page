@@ -690,125 +690,194 @@
     el('text', { x: X0, y: 130, 'font-size': 13, text: '24개 중 4개만 저장  ·  나머지 20개는 None  ·  S = 20에서 약 870 MB 절약 (S에 비례)  ·  출력 동일' }, svg);
   }
 
-  /* ---------------- M5 epipolar demo ---------------- */
+  /* ---------------- M5 epipolar geometry in 3D ---------------- */
   function epipolar() {
     const cv = $('#epi-canvas'); if (!cv) return;
     const ctx = cv.getContext('2d');
-    const COLS = 15, ROWS = 10, PS = 28, PW = COLS * PS, PH = ROWS * PS, GAPX = 40, TOP = 26;
-    const LW = PW * 2 + GAPX, LH = PH + TOP + 4;
-    const SHIFT = [2, 1]; // world patch at p in frame t appears at p - SHIFT in frame t+1
-    const sigIn = $('#sig-in'), note = $('#epi-note');
-    // texture class in world patch coords
-    const cls = (wx, wy) => {
-      if (wy < 2) return 'sky';
-      if (wy >= 10) return 'ground';
-      if (wx % 3 === 1 && wy % 2 === 1) return 'window';
-      return 'wall';
+    const LW = 960, LH = 540, DS = 2.3; // DS: image planes drawn enlarged in the 3D view (same geometry)
+    const V3 = {
+      add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]], sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+      mul: (a, k) => [a[0] * k, a[1] * k, a[2] * k], dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+      cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
+      norm: (a) => { const l = Math.hypot(...a); return [a[0] / l, a[1] / l, a[2] / l]; },
     };
-    const CLS_KO = { window: '창문', wall: '벽', sky: '하늘', ground: '땅' };
-    let hover = null;
-    // find a default patch where appearance-only is wrong
-    function evaluate(px, py, sigma) {
-      const wx = px, wy = py, c = cls(wx, wy);
-      const tx = px - SHIFT[0], ty = py - SHIFT[1];
-      let bestA = null, bestG = null;
-      const gates = [];
-      const ux = SHIFT[0] / Math.hypot(...SHIFT), uy = SHIFT[1] / Math.hypot(...SHIFT);
-      const cxp = (px + .5) * PS, cyp = (py + .5) * PS;
-      for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
-        const qwx = x + SHIFT[0], qwy = y + SHIFT[1];
-        let s;
-        if (qwx === wx && qwy === wy) s = 0.90;
-        else if (cls(qwx, qwy) === c) s = 0.84 + 0.13 * hash(px, py, x, y);
-        else s = 0.15 + 0.3 * hash(px, py, x, y);
-        const dx = (x + .5) * PS - cxp, dy = (y + .5) * PS - cyp;
-        const d = Math.abs(dx * uy - dy * ux);
-        const inBand = d <= sigma; // hard candidate restriction (core); sigma = band width tau
-        gates.push(inBand ? 1 : 0);
-        if (!bestA || s > bestA.s) bestA = { x, y, s };
-        if (inBand && (!bestG || s > bestG.s)) bestG = { x, y, s };
-      }
-      const inView = tx >= 0 && ty >= 0 && tx < COLS && ty < ROWS;
-      return { bestA, bestG, gates, truth: inView ? { x: tx, y: ty } : null };
+    function camera(C, T, F = 0.9, hw = 0.5, hh = 0.36) {
+      const f = V3.norm(V3.sub(T, C)), r = V3.norm(V3.cross(f, [0, 1, 0])), u = V3.cross(r, f);
+      const cam = { C, f, r, u, F, hw, hh };
+      cam.project = (P) => { const d = V3.sub(P, C), z = V3.dot(d, f); return z > 1e-3 ? [F * V3.dot(d, r) / z, F * V3.dot(d, u) / z, z] : null; };
+      cam.planePoint = (x, y, k = 1) => V3.add(V3.add(V3.add(C, V3.mul(f, F * k)), V3.mul(r, x * k)), V3.mul(u, y * k));
+      cam.dir = (x, y) => V3.norm(V3.sub(cam.planePoint(x, y), C));
+      return cam;
     }
-    for (let y = 3; y < ROWS && !hover; y++) for (let x = 5; x < COLS && !hover; x++) {
-      if (cls(x, y) !== 'window') continue;
-      const e = evaluate(x, y, 0.05 * PW);
-      if (e.truth && (e.bestA.x !== e.truth.x || e.bestA.y !== e.truth.y) && e.bestG.x === e.truth.x && e.bestG.y === e.truth.y) hover = { x, y };
-    }
-    hover = hover || { x: 7, y: 5 };
+    const LOOK = [0, 1.5, 0];
+    const cam1 = camera([-1.9, 1.5, 5.6], LOOK), cam2 = camera([1.5, 1.8, 5.0], LOOK);
 
-    function patchColor(c, wx, wy) {
-      const v = hash(wx, wy) * 0.08;
-      if (c === 'sky') return `hsl(205 70% ${82 - wy * 4 - v * 50}%)`;
-      if (c === 'ground') return `hsl(95 25% ${48 - v * 40}%)`;
-      if (c === 'window') return `hsl(215 45% ${30 + v * 40}%)`;
-      return `hsl(28 30% ${70 - v * 60}%)`;
+    // facade with a repeated window grid (look-alike candidates)
+    const FAC = [[-3, 0, 0], [3, 0, 0], [3, 3, 0], [-3, 3, 0]];
+    const WIN = [];
+    for (let r = 0; r < 3; r++) for (let c = 0; c < 6; c++) {
+      const cx = -2.5 + c, cy = 0.75 + r * 0.8, w = 0.21, h = 0.18;
+      WIN.push({ c: [cx, cy, 0], quad: [[cx - w, cy - h, 0], [cx + w, cy - h, 0], [cx + w, cy + h, 0], [cx - w, cy + h, 0]] });
     }
-    function drawFrame(ox, offx, offy, title) {
-      ctx.fillStyle = css('--text-2'); ctx.font = '600 13px Inter, sans-serif';
-      ctx.fillText(title, ox, 16);
-      for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
-        const wx = x + offx, wy = y + offy;
-        ctx.fillStyle = patchColor(cls(wx, wy), wx, wy);
-        ctx.fillRect(ox + x * PS, TOP + y * PS, PS, PS);
-      }
-      ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.lineWidth = 1;
-      for (let x = 0; x <= COLS; x++) { ctx.beginPath(); ctx.moveTo(ox + x * PS + .5, TOP); ctx.lineTo(ox + x * PS + .5, TOP + PH); ctx.stroke(); }
-      for (let y = 0; y <= ROWS; y++) { ctx.beginPath(); ctx.moveTo(ox, TOP + y * PS + .5); ctx.lineTo(ox + PW, TOP + y * PS + .5); ctx.stroke(); }
+    let target = 8;
+    let yaw = 0.55, pitch = 0.42, depthT = 0.5, playing = !reduceMotion, t0 = performance.now();
+    const VIEW_C = [0, 1.5, 2.7], VIEW_D = 13, VF = 720, VCX = 300, VCY = 250;
+    function viewProject(P) {
+      const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+      let [x, y, z] = V3.sub(P, VIEW_C);
+      [x, z] = [cy * x - sy * z, sy * x + cy * z];
+      [y, z] = [cp * y - sp * z, sp * y + cp * z];
+      const zz = VIEW_D - z;
+      return [VCX + VF * x / zz, VCY - VF * y / zz];
     }
-    function ring(ox, p, color, r) {
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 5;
-      ctx.beginPath(); ctx.arc(ox + (p.x + .5) * PS, TOP + (p.y + .5) * PS, r, 0, Math.PI * 2); ctx.stroke();
-      ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.stroke();
+    // ray geometry for current target
+    function rayInfo() {
+      const X = WIN[target].c, x1 = cam1.project(X);
+      const dir = V3.norm(V3.sub(X, cam1.C)), trueDepth = Math.hypot(...V3.sub(X, cam1.C));
+      // depth range where the point is in front of camera 2
+      let lo = 1.2; while (lo < trueDepth * 0.9 && (!cam2.project(V3.add(cam1.C, V3.mul(dir, lo))) || cam2.project(V3.add(cam1.C, V3.mul(dir, lo)))[2] < 0.4)) lo += 0.1;
+      const hi = trueDepth * 2.1;
+      return { X, x1, dir, trueDepth, lo, hi, at: (d) => V3.add(cam1.C, V3.mul(dir, d)) };
     }
+
+    // 2D panels (camera images)
+    const PAN = [{ cam: cam1, x: 630, y: 34, w: 310, title: 'frame t (클릭: 다른 창문 선택)' }, { cam: cam2, x: 630, y: 286, w: 310, title: 'frame t+1' }];
+    PAN.forEach((p) => { p.h = p.w * (0.36 / 0.5); });
+    const toPanel = (p, q) => [p.x + (q[0] / 0.5 + 1) / 2 * p.w, p.y + (1 - (q[1] / 0.36 + 1) / 2) * p.h];
+    const BAND_PX = 0.05 * 310;
+
+    function col(name) { return css(name); }
+    function poly(pts, fill, stroke, lw = 1) {
+      if (pts.some((q) => !q)) return;
+      ctx.beginPath(); pts.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]))); ctx.closePath();
+      if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+      if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); }
+    }
+    function seg(a, b, color, lw = 1.5, dash = []) { ctx.beginPath(); ctx.setLineDash(dash); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.stroke(); ctx.setLineDash([]); }
+    function dot(p, r, fill, ring) { ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); if (ring) { ctx.strokeStyle = ring; ctx.lineWidth = 3; ctx.stroke(); } ctx.fillStyle = fill; ctx.fill(); }
+    function ringAt(p, r, color) { ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); ctx.strokeStyle = '#fff'; ctx.lineWidth = 5; ctx.stroke(); ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.stroke(); }
+    function text(t, p, opts = {}) { ctx.font = `${opts.bold ? 600 : 400} ${opts.size || 12}px Inter, "Noto Sans KR", sans-serif`; ctx.fillStyle = opts.color || col('--text-2'); ctx.textAlign = opts.align || 'left'; ctx.fillText(t, p[0], p[1]); ctx.textAlign = 'left'; }
+    // distance (panel px) from point to the epipolar line through a,b
+    const lineDist = (p, a, b) => Math.abs((b[0] - a[0]) * (a[1] - p[1]) - (a[0] - p[0]) * (b[1] - a[1])) / Math.hypot(b[0] - a[0], b[1] - a[1]);
+
+    function drawCamera3D(cam, label, img) {
+      const corners = [[-cam.hw, -cam.hh], [cam.hw, -cam.hh], [cam.hw, cam.hh], [-cam.hw, cam.hh]].map(([x, y]) => viewProject(cam.planePoint(x, y, DS)));
+      const c = viewProject(cam.C);
+      poly(corners, col('--surface'), col('--text-3'), 1.2);
+      // the photo on the image plane: facade + windows as seen by this camera
+      const onPlane = (P) => { const q = cam.project(P); return q ? viewProject(cam.planePoint(q[0], q[1], DS)) : null; };
+      ctx.save(); poly(corners); ctx.clip();
+      poly(FAC.map(onPlane), col('--tok-b'));
+      WIN.forEach((w, i) => poly(w.quad.map(onPlane), i === target && img === 1 ? col('--accent') : col('--text-3')));
+      ctx.restore();
+      corners.forEach((p) => seg(c, p, col('--text-3'), 1));
+      dot(c, 4, col('--text'));
+      text(label, [c[0], c[1] + 18], { align: 'center', bold: true });
+      return onPlane;
+    }
+
     function render() {
       const dpr = window.devicePixelRatio || 1, w = cv.clientWidth;
-      cv.width = Math.round(w * dpr); cv.height = Math.round(w * LH / LW * dpr);
-      cv.style.height = (w * LH / LW) + 'px';
-      const k = cv.width / LW;
-      ctx.setTransform(k, 0, 0, k, 0, 0);
-      ctx.clearRect(0, 0, LW, LH);
-      const sigma = +sigIn.value * PW;
-      $('#sig-out').textContent = (+sigIn.value).toFixed(2) + ' W';
-      const R = PW + GAPX;
-      drawFrame(0, 0, 0, 'frame t  (패치에 마우스를 올려 보세요)');
-      drawFrame(R, SHIFT[0], SHIFT[1], 'frame t+1');
-      const e = evaluate(hover.x, hover.y, sigma);
-      // band overlay
-      e.gates.forEach((g, i) => {
-        const x = i % COLS, y = Math.floor(i / COLS);
-        ctx.fillStyle = `rgba(245,213,71,${(g * 0.45).toFixed(3)})`;
-        ctx.fillRect(R + x * PS, TOP + y * PS, PS, PS);
-      });
-      // epipolar line
-      ctx.save(); ctx.beginPath(); ctx.rect(R, TOP, PW, PH); ctx.clip();
-      const cxp = (hover.x + .5) * PS, cyp = (hover.y + .5) * PS, L = 2000, u = Math.hypot(...SHIFT);
-      ctx.strokeStyle = '#f5d547'; ctx.lineWidth = 2; ctx.setLineDash([]);
-      ctx.beginPath(); ctx.moveTo(R + cxp - L * SHIFT[0] / u, TOP + cyp - L * SHIFT[1] / u); ctx.lineTo(R + cxp + L * SHIFT[0] / u, TOP + cyp + L * SHIFT[1] / u); ctx.stroke();
+      cv.width = Math.round(w * dpr); cv.height = Math.round(w * LH / LW * dpr); cv.style.height = (w * LH / LW) + 'px';
+      const k = cv.width / LW; ctx.setTransform(k, 0, 0, k, 0, 0); ctx.clearRect(0, 0, LW, LH);
+      const R = rayInfo(), d = R.lo + (R.hi - R.lo) * depthT, Xd = R.at(d);
+      $('#epi-depth-out').textContent = Math.abs(d - R.trueDepth) < 0.12 ? '실제 깊이' : d < R.trueDepth ? '더 가까움' : '더 멂';
+
+      // ---------- 3D view ----------
+      ctx.save(); ctx.beginPath(); ctx.rect(0, 0, 596, LH); ctx.clip();
+      for (let x = -4; x <= 4; x++) seg(viewProject([x, 0, -0.5]), viewProject([x, 0, 7]), col('--grid'), 1);
+      for (let z = -0.5; z <= 7; z += 1) seg(viewProject([-4, 0, z]), viewProject([4, 0, z]), col('--grid'), 1);
+      poly(FAC.map(viewProject), col('--tok-b'), col('--text-3'));
+      WIN.forEach((wn, i) => poly(wn.quad.map(viewProject), i === target ? col('--accent') : col('--text-3')));
+      // epipolar plane (C1, C2, ray)
+      const A = viewProject(R.at(R.lo)), B = viewProject(R.at(R.hi));
+      poly([viewProject(cam1.C), viewProject(cam2.C), B], 'rgba(245,213,71,.18)');
+      poly([viewProject(cam1.C), viewProject(cam2.C), A], 'rgba(245,213,71,.18)');
+      seg(viewProject(cam1.C), viewProject(cam2.C), col('--text-3'), 1, [4, 4]);
+      drawCamera3D(cam1, 'frame t 카메라', 1);
+      const onPlane2 = drawCamera3D(cam2, 'frame t+1 카메라', 2);
+      // ray from camera 1 through the pixel (depth unknown)
+      seg(viewProject(cam1.C), B, col('--s2'), 2);
+      // epipolar line on image plane 2 = projection of the ray
+      const e0 = onPlane2(R.at(R.lo)), e1 = onPlane2(R.at(R.hi));
+      if (e0 && e1) seg(e0, e1, '#e0b400', 2.5);
+      // true 3D point
+      ringAt(viewProject(R.X), 7, col('--s1'));
+      // moving candidate point and its view in camera 2
+      const pd = viewProject(Xd), pd2 = onPlane2(Xd);
+      seg(pd, viewProject(cam2.C), col('--s2'), 1, [3, 3]);
+      dot(pd, 6, col('--s2'), '#fff');
+      if (pd2) dot(pd2, 4, col('--s2'));
+      text('ray: 깊이를 모르는 3D 점의 후보', [B[0] - 4, B[1] - 10], { align: 'right', size: 11.5 });
+      text('epipolar plane', [(viewProject(cam1.C)[0] + viewProject(cam2.C)[0] + B[0]) / 3, (viewProject(cam1.C)[1] + viewProject(cam2.C)[1] + B[1]) / 3], { size: 11, color: col('--text-3'), align: 'center' });
+      text('드래그해서 돌려 보세요', [12, LH - 12], { size: 11.5, color: col('--text-3') });
       ctx.restore();
-      // selected patch
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
-      ctx.strokeRect(hover.x * PS + 1.5, TOP + hover.y * PS + 1.5, PS - 3, PS - 3);
-      const same = e.bestA.x === e.bestG.x && e.bestA.y === e.bestG.y;
-      ring(R, e.bestA, css('--bad'), same ? 17 : 13);
-      ring(R, e.bestG, css('--s1'), 12);
-      const ok = (p) => e.truth && p.x === e.truth.x && p.y === e.truth.y;
-      if (!e.truth) note.textContent = '이 패치의 짝은 frame t+1에서 화면 밖으로 나갔습니다. band 안에는 비슷한 후보가 없어 유사도가 낮고, top-n merge에서 선택되지 않습니다.';
-      else if (ok(e.bestA) && ok(e.bestG)) note.textContent = '여기서는 둘 다 진짜 짝을 찾습니다. 모호하지 않은 매칭에서는 band 제한이 방해하지 않습니다.';
-      else if (ok(e.bestG)) note.textContent = `겉모양만 보면 직선에서 벗어난, 비슷하게 생긴 ${CLS_KO[cls(hover.x, hover.y)]} 패치를 고릅니다(빨강). 노란 band 안에서만 찾으면 진짜 짝이 나옵니다(파랑).`;
-      else note.textContent = 'band가 너무 넓으면 제약이 사라져, M5는 겉모양 매칭(M1+M2)과 같아집니다.';
+
+      // ---------- 2D camera images ----------
+      PAN.forEach((p, pi) => {
+        text(p.title, [p.x, p.y - 8], { bold: true, size: 12.5, color: col('--text') });
+        ctx.save(); poly([[p.x, p.y], [p.x + p.w, p.y], [p.x + p.w, p.y + p.h], [p.x, p.y + p.h]], col('--tok-a')); ctx.clip();
+        const P2 = (P) => { const q = p.cam.project(P); return q ? toPanel(p, q) : null; };
+        poly([[-8, 0, -1], [8, 0, -1], [8, 0, 3.5], [-8, 0, 3.5]].map(P2), col('--tok-c'));
+        poly(FAC.map(P2), col('--tok-b'));
+        let a2, b2;
+        if (pi === 1) {
+          a2 = P2(R.at(R.lo)); b2 = P2(R.at(R.hi));
+          // extend the line across the panel and draw the band
+          const dx = b2[0] - a2[0], dy = b2[1] - a2[1], L = Math.hypot(dx, dy), ux = dx / L, uy = dy / L, nx = -uy * BAND_PX, ny = ux * BAND_PX;
+          const p0 = [a2[0] - ux * 900, a2[1] - uy * 900], p1 = [a2[0] + ux * 900, a2[1] + uy * 900];
+          poly([[p0[0] + nx, p0[1] + ny], [p1[0] + nx, p1[1] + ny], [p1[0] - nx, p1[1] - ny], [p0[0] - nx, p0[1] - ny]], 'rgba(245,213,71,.45)');
+        }
+        WIN.forEach((wn, i) => {
+          const q = wn.quad.map(P2); if (q.some((v) => !v)) return;
+          let fill = col('--text-3'), alpha = 1;
+          if (pi === 0 && i === target) fill = col('--accent');
+          if (pi === 1 && lineDist(P2(wn.c), a2, b2) > BAND_PX) alpha = 0.3;
+          ctx.globalAlpha = alpha; poly(q, fill); ctx.globalAlpha = 1;
+        });
+        if (pi === 1) {
+          seg([a2[0] - (b2[0] - a2[0]) * 3, a2[1] - (b2[1] - a2[1]) * 3], [b2[0] + (b2[0] - a2[0]) * 3, b2[1] + (b2[1] - a2[1]) * 3], '#e0b400', 2.5);
+          ringAt(P2(R.X), 13, col('--s1'));
+          const m = P2(Xd); if (m) dot(m, 6, col('--s2'), '#fff');
+        } else {
+          ringAt(toPanel(p, R.x1), 13, col('--s1'));
+        }
+        ctx.restore();
+        poly([[p.x, p.y], [p.x + p.w, p.y], [p.x + p.w, p.y + p.h], [p.x, p.y + p.h]], null, col('--border'));
+      });
+      text('흐린 창문 = band 밖 → 아무리 닮아도 후보에서 제외', [PAN[1].x, PAN[1].y + PAN[1].h + 18], { size: 11.5 });
     }
-    function pick(ev) {
-      const r = cv.getBoundingClientRect(), k = LW / r.width;
-      const x = Math.floor(((ev.clientX - r.left) * k) / PS), y = Math.floor(((ev.clientY - r.top) * k - TOP) / PS);
-      if (x >= 0 && x < COLS && y >= 0 && y < ROWS && (x !== hover.x || y !== hover.y)) { hover = { x, y }; render(); }
-    }
-    cv.addEventListener('pointermove', pick);
-    cv.addEventListener('pointerdown', pick);
-    sigIn.addEventListener('input', render);
+
+    // interaction: orbit by drag on the 3D view, pick a window on the frame-t panel
+    let drag = null;
+    const toLogical = (ev) => { const r = cv.getBoundingClientRect(); return [(ev.clientX - r.left) * LW / r.width, (ev.clientY - r.top) * LH / r.height]; };
+    cv.addEventListener('pointerdown', (ev) => {
+      const [x, y] = toLogical(ev), p = PAN[0];
+      if (x >= p.x && x <= p.x + p.w && y >= p.y && y <= p.y + p.h) {
+        let best = target, bd = 1e9;
+        WIN.forEach((wn, i) => { const q = p.cam.project(wn.c); if (!q) return; const s2 = toPanel(p, q), dd = Math.hypot(s2[0] - x, s2[1] - y); if (dd < bd) { bd = dd; best = i; } });
+        target = best; render(); return;
+      }
+      if (x < 596) { drag = [x, y, yaw, pitch]; cv.setPointerCapture(ev.pointerId); }
+    });
+    cv.addEventListener('pointermove', (ev) => {
+      if (!drag) return;
+      const [x, y] = toLogical(ev);
+      yaw = drag[2] + (x - drag[0]) * 0.008; pitch = clamp(drag[3] + (y - drag[1]) * 0.006, -0.1, 1.2); render();
+    });
+    cv.addEventListener('pointerup', () => { drag = null; });
+    const slider = $('#epi-depth'), btn = $('#epi-play');
+    slider.addEventListener('input', () => { depthT = +slider.value; if (playing) { playing = false; btn.textContent = '재생'; } render(); });
+    btn.addEventListener('click', () => { playing = !playing; btn.textContent = playing ? '일시정지' : '재생'; if (playing) t0 = performance.now() - Math.acos(1 - 2 * depthT) / Math.PI * 3000; });
+    let raf = null, visible = false;
+    const loop = (now) => {
+      if (playing) { depthT = 0.5 - 0.5 * Math.cos(((now - t0) / 3000) * Math.PI); slider.value = depthT; render(); }
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((es) => es.forEach((e) => { visible = e.isIntersecting; if (visible && !raf) raf = requestAnimationFrame(loop); })).observe(cv);
     window.addEventListener('resize', render);
     matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
+    if (!playing) btn.textContent = '재생';
     render();
   }
 

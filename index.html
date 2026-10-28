@@ -274,21 +274,27 @@
     <p>pose는 VGGT 자신에게서 얻습니다. 224 px로 돌리는 <b>Pass 0</b>(M1+M2를 적용한 TTM)은 본 추론의 약 1/10 시간이 걸리고,
       여기서 얻은 pose로 <span class="m">F</span>를 만든 뒤 518 px로 돌리는 <b>Pass 1</b>의 20개 merge 레이어가 모두 같은 band mask를 공유합니다.
       band가 충분히 넓으면 제약이 사라져 M5는 M1+M2와 같아집니다. pose가 퇴화된 경우(움직임 없음)에도 제약 없이 M1+M2로 돌아갑니다.
-      <b>왼쪽 프레임의 패치에 마우스를 올려 보세요.</b></p>
+      </p>
+    <ol class="epi-steps">
+      <li>frame t의 픽셀 하나는 카메라에서 뻗은 <b>광선(ray)</b> 위 어딘가에 있는 3D 점입니다. 사진 한 장만으로는 깊이를 모르니, 점은 이 ray 위 어디든 있을 수 있습니다.</li>
+      <li>이 ray를 frame t+1 카메라에서 바라보면 사진 위에 <b>한 줄의 선</b>으로 찍힙니다. 이것이 epipolar line입니다. 깊이 슬라이더를 움직이면 후보 점이 이 선을 따라 미끄러집니다.</li>
+      <li>그래서 진짜 짝은 반드시 이 선 위에 있습니다. 선 주변 band 밖에 있는 창문은 아무리 닮아도 후보에서 뺄 수 있습니다.</li>
+    </ol>
   </section>
   <section class="wrap">
     <div class="card epi">
       <div class="controls">
-        <label>band 폭 τ <output id="sig-out">0.05 W</output>
-          <input id="sig-in" type="range" min="0.01" max="0.5" step="0.01" value="0.05"></label>
+        <button id="epi-play" class="chip" type="button">일시정지</button>
+        <label>3D 점의 깊이 <output id="epi-depth-out"></output>
+          <input id="epi-depth" type="range" min="0" max="1" step="0.001" value="0.5"></label>
         <div class="legend-inline">
-          <span><i class="key ring-wrong"></i>겉모양만 본 매칭</span>
-          <span><i class="key ring-right"></i>epipolar band 안에서 매칭</span>
-          <span><i class="key line-epi"></i>epipolar line</span>
+          <span><i class="key" style="background:var(--s2);border-radius:50%"></i>ray 위의 후보 3D 점</span>
+          <span><i class="key line-epi"></i>epipolar line · band</span>
+          <span><i class="key ring-right"></i>진짜 짝</span>
         </div>
       </div>
-      <canvas id="epi-canvas" aria-label="epipolar band 인터랙티브 데모"></canvas>
-      <p class="note" id="epi-note"></p>
+      <canvas id="epi-canvas" aria-label="epipolar geometry 3D 인터랙티브 그림"></canvas>
+      <p class="note" id="epi-note">왼쪽 3D 그림은 드래그해서 돌려 볼 수 있습니다. 오른쪽 위 frame t에서 창문을 클릭하면 다른 점을 고릅니다.</p>
     </div>
   </section>
 

@@ -201,3 +201,8 @@ svg .mono { font-family: "JetBrains Mono", monospace; }
 @media (max-width: 560px) { .glossary dl { grid-template-columns: 1fr; } .glossary dd { margin-bottom: 6px; } }
 details.math { margin: 10px 0; }
 details.math summary { cursor: pointer; font-size: 13.5px; color: var(--text-2); }
+
+.epi canvas { cursor: grab; }
+.epi canvas:active { cursor: grabbing; }
+.epi-steps { padding-left: 22px; }
+.epi-steps li { margin: 6px 0; }
