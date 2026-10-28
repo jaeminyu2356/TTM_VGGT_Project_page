@@ -188,13 +188,18 @@
   </section>
   <section class="wrap">
     <figure class="card">
-      <svg id="asym" viewBox="0 0 960 360" role="img" aria-label="merge-unmerge 방식과 KV-asymmetric 방식 비교"></svg>
-      <figcaption>위: 대칭적인 merge–unmerge 방식은 scatter 단계가 필요하고, 이때 제거됐던 위치가 오염됩니다. 아래: TTM은 query를 모두 유지하고 K/V만 줄이므로 출력이 구조적으로 원래 길이입니다.</figcaption>
+      <svg id="nounmerge" viewBox="0 0 960 500" role="img" aria-label="왜 unmerge가 필요 없는지: query 행마다 출력 행이 하나씩 나오는 attention 행렬 계산 애니메이션"></svg>
+      <figcaption>
+        <button id="nu-toggle" class="chip" type="button">일시정지</button>
+        <span>attention 출력 O의 행 수는 <b>query 행 수</b>로 정해집니다. TTM은 query를 하나도 빼지 않으므로 출력도 토큰 12개 모두에게 하나씩 나옵니다.
+        key/value에서 빠진 토큰(점선)도 자기 query로 줄어든 key를 보고 자기 출력을 받습니다. 행 위에 마우스를 올리면 그 query만 따로 볼 수 있습니다.
+        가중치는 이 페이지에서 실제 softmax로 계산한 값입니다(장난감 예시).</span>
+      </figcaption>
     </figure>
   </section>
 
   <section class="wrap prose">
-    <h3>해상도가 유지된다는 것</h3>
+    <h3>그래서 해상도가 유지됩니다</h3>
     <p>merge→unmerge 방식에서는 제거된 패치가 이웃 프레임 짝의 특징을 복사해 받습니다. 이웃 프레임은 시차만큼 어긋나 있으므로,
       merge할수록 그 패치의 세부 정보가 뭉개지고 경계가 어긋납니다. KV-asymmetric 방식에서는 모든 패치가 자기 query를 그대로 가지고
       줄어든 K/V에서 문맥만 가져오기 때문에, 패치마다 고유한 출력이 나오고 공간 해상도가 그대로 유지됩니다.</p>

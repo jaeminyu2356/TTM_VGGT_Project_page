@@ -547,78 +547,133 @@
     });
   }
 
-  /* ---------------- Merge-unmerge vs asymmetric ---------------- */
-  function asym() {
-    const svg = $('#asym'); if (!svg) return;
-    const C = 9; // cell size
-    const frameFill = (f) => ['var(--tok-a)', 'var(--tok-b)', 'var(--tok-c)', 'var(--s5)'][f];
-    const defs = el('defs', {}, svg);
-    const mk = el('marker', { id: 'arr2', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto' }, defs);
-    el('path', { d: 'M0,0 L10,5 L0,10 z', fill: 'var(--text-3)' }, mk);
-    const pat = el('pattern', { id: 'hatch', width: 5, height: 5, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' }, defs);
-    el('rect', { width: 2, height: 5, fill: 'var(--bad)' }, pat);
-    const arrow = (x1, y, x2, label) => {
-      el('path', { d: `M${x1},${y} L${x2},${y}`, stroke: 'var(--text-3)', 'stroke-width': 1.5, 'marker-end': 'url(#arr2)' }, svg);
-      if (label) el('text', { x: (x1 + x2) / 2, y: y - 8, 'text-anchor': 'middle', 'font-size': 11, text: label }, svg);
-    };
-    // strip of tokens: 4 frames x 4 tokens; dropped = index 1 and 3 of frames (not last)
-    const FULL = [], RED = [];
-    for (let f = 0; f < 4; f++) for (let i = 0; i < 4; i++) { FULL.push({ f, i }); if (i % 2 === 0) RED.push({ f, i }); else if (f === 3 && i === 1) RED.push({ f, i }); }
-    // every frame drops the same number of tokens
-    const isDropped = (t) => t.i === 1;
-    RED.length = 0; FULL.forEach((t) => { if (!isDropped(t)) RED.push(t); });
-    const strip = (x, y, arr, opts = {}) => {
-      arr.forEach((t, k) => {
-        el('rect', { x: x, y: y + k * C, width: C * 2, height: C - 1.5, rx: 2, fill: frameFill(t.f) }, svg);
-        if (opts.bad && isDropped(t)) el('rect', { x: x, y: y + k * C, width: C * 2, height: C - 1.5, rx: 2, fill: 'url(#hatch)' }, svg);
-      });
-      if (opts.label) el('text', { x: x + C, y: y - 8, 'text-anchor': 'middle', 'font-size': 11, class: 'mono', text: opts.label }, svg);
-      return y + arr.length * C;
-    };
-    const matrix = (x, y, rows, cols, label, fill) => {
-      el('rect', { x, y, width: cols * C, height: rows * C, rx: 3, fill, 'fill-opacity': .5, stroke: 'var(--border)' }, svg);
-      for (let r = 1; r < rows; r++) el('path', { d: `M${x},${y + r * C} h${cols * C}`, stroke: 'var(--surface)', 'stroke-width': .6 }, svg);
-      for (let c = 1; c < cols; c++) el('path', { d: `M${x + c * C},${y} v${rows * C}`, stroke: 'var(--surface)', 'stroke-width': .6 }, svg);
-      el('text', { x: x + cols * C / 2, y: y - 8, 'text-anchor': 'middle', 'font-size': 11, class: 'mono', text: label }, svg);
-    };
-    // Row 1
-    const y1 = 46;
-    el('text', { x: 16, y: 24, class: 't-strong', 'font-size': 14, text: '대칭 방식: merge → attention → unmerge' }, svg);
-    strip(40, y1, FULL, { label: 'X (SP)' });
-    arrow(70, y1 + 70, 140, 'merge');
-    strip(150, y1 + 18, RED, { label: "X' " });
-    arrow(180, y1 + 70, 230, 'attn');
-    matrix(240, y1 + 18, RED.length, RED.length, "S(P−n) × S(P−n)", 'var(--s2)');
-    arrow(240 + RED.length * C + 10, y1 + 70, 240 + RED.length * C + 60);
-    const ux = 240 + RED.length * C + 70;
-    strip(ux, y1 + 18, RED, { label: 'Y′' });
-    arrow(ux + 30, y1 + 70, ux + 110, 'unmerge');
-    strip(ux + 120, y1, FULL, { label: 'Y (SP)', bad: true });
-    el('text', { x: ux + 160, y: y1 + 50, 'font-size': 12, class: 't-strong', text: 'scatter 단계' }, svg);
-    el('text', { x: ux + 160, y: y1 + 68, 'font-size': 11.5, text: '빗금 친 행은 frame t와 t+1이' }, svg);
-    el('text', { x: ux + 160, y: y1 + 84, 'font-size': 11.5, text: '섞인 복사본을 받음 → depth 흐려짐' }, svg);
-    // Row 2
-    const y2 = 228;
-    el('text', { x: 16, y: 206, class: 't-strong', 'font-size': 14, text: 'TTM: KV-asymmetric (unmerge 없음)' }, svg);
-    strip(40, y2, FULL, { label: 'X (SP)' });
-    el('path', { d: `M64,${y2 + 20} C 110,${y2 + 20} 110,${y2 + 20} 140,${y2 + 20}`, stroke: 'var(--text-3)', 'stroke-width': 1.5, fill: 'none', 'marker-end': 'url(#arr2)' }, svg);
-    el('text', { x: 100, y: y2 + 12, 'text-anchor': 'middle', 'font-size': 11, text: 'Q = XW_Q' }, svg);
-    arrow(70, y2 + 100, 140, 'merge → K,V');
-    strip(150, y2 + 18, RED, { label: 'K, V' });
-    arrow(180, y2 + 70, 230);
-    matrix(240, y2, FULL.length, RED.length, 'SP × S(P−n)', 'var(--s1)');
-    el('text', { x: 240 + RED.length * C / 2, y: y2 + FULL.length * C + 18, 'text-anchor': 'middle', 'font-size': 11, text: '행 = 모든 query' }, svg);
-    arrow(240 + RED.length * C + 10, y2 + 70, 240 + RED.length * C + 60);
-    strip(ux, y2, FULL, { label: 'O (SP)' });
-    el('text', { x: ux + 40, y: y2 + 50, 'font-size': 12, class: 't-strong', text: '처음부터 원래 길이' }, svg);
-    el('text', { x: ux + 40, y: y2 + 68, 'font-size': 11.5, text: '원래 토큰마다 출력 하나,' }, svg);
-    el('text', { x: ux + 40, y: y2 + 84, 'font-size': 11.5, text: 'scatter도 오염도 없음' }, svg);
-    // frame legend
-    const lx = 760;
-    ['frame 0', 'frame 1', 'frame 2', 'frame 3'].forEach((t, i) => {
-      el('rect', { x: lx, y: 214 + i * 18, width: 12, height: 10, rx: 2, fill: frameFill(i) }, svg);
-      el('text', { x: lx + 18, y: 223 + i * 18, 'font-size': 11, text: t }, svg);
+  /* ---------------- Why no unmerge: row-by-row attention ---------------- */
+  function noUnmergeAnim() {
+    const svg = $('#nounmerge'); if (!svg) return;
+    // 12 tokens: frame t (0-5) and frame t+1 (6-11). Kinds give a toy appearance feature.
+    const KINDS = { sky: '#9ec5f4', wall: '#f4c58f', win: '#5b5a56', door: '#eb6834' };
+    const KIND_KO = { sky: '하늘', wall: '벽', win: '창문', door: '문' };
+    const TOK = [
+      ['sky', 0], ['wall', 0], ['win', 0], ['wall', 0], ['win', 0], ['door', 0],
+      ['sky', 1], ['wall', 1], ['win', 1], ['wall', 1], ['win', 1], ['door', 1],
+    ].map(([k, f], i) => ({ i, k, f, label: `${f ? 't+1' : 't'}·${(i % 6) + 1}` }));
+    const DROPPED = new Set([1, 2, 5]);            // frame t tokens whose twins live in frame t+1
+    const TWIN = { 1: 7, 2: 8, 5: 11 };
+    const KEYS = TOK.filter((t) => !DROPPED.has(t.i)).map((t) => t.i);  // 9 keys / values
+    const hex = (h) => [1, 3, 5].map((o) => parseInt(h.slice(o, o + 2), 16));
+    // toy logits: same appearance + same position (self or twin) -> strong
+    const logit = (q, k) => (TOK[q].k === TOK[k].k ? 2.2 : 0) + (q === k || TWIN[q] === k ? 2.6 : 0) + 0.3 * hash(q, k);
+    const W = TOK.map((q) => {
+      const l = KEYS.map((k) => logit(q.i, k)), m = Math.max(...l), e = l.map((v) => Math.exp(v - m)), z = e.reduce((a, b) => a + b, 0);
+      return e.map((v) => v / z);
     });
+    const OUT = W.map((w) => KEYS.reduce((acc, k, j) => acc.map((c, ch) => c + w[j] * hex(KINDS[TOK[k].k])[ch]), [0, 0, 0]));
+
+    const C = 16, R = 16, D = 4, Y0 = 108;
+    const X = { tok: 40, q: 128, kt: 234, sc: 410, v: 600, o: 712, out: 820 };
+    const ry = (r) => Y0 + r * R;
+    const title = el('text', { x: 480, y: 26, 'text-anchor': 'middle', class: 't-strong', 'font-size': 15 }, svg);
+    const sub = el('text', { x: 480, y: 46, 'text-anchor': 'middle', 'font-size': 12.5 }, svg);
+    el('text', { x: 16, y: 76, class: 't-strong', 'font-size': 13.5, text: 'TTM (KV-asymmetric): query 12개 그대로, key/value만 9개' }, svg);
+
+    const cap = (x, y, t, extra = {}) => el('text', { x, y, 'text-anchor': 'middle', 'font-size': 11.5, class: 'mono', text: t, ...extra }, svg);
+    const sym = (x, y, t) => el('text', { x, y, 'text-anchor': 'middle', 'font-size': 18, class: 't-muted', text: t }, svg);
+    const mid = ry(6);
+    // input tokens
+    const tokEls = TOK.map((t) => el('rect', { x: X.tok, y: ry(t.i) + 1, width: 40, height: R - 2, rx: 3, fill: KINDS[t.k], stroke: 'var(--text-2)', 'stroke-width': DROPPED.has(t.i) ? 1.4 : 0, 'stroke-dasharray': '3 2', 'fill-opacity': DROPPED.has(t.i) ? 0.45 : 1 }, svg));
+    TOK.forEach((t) => el('text', { x: X.tok - 6, y: ry(t.i) + 12, 'text-anchor': 'end', 'font-size': 10, class: 'mono t-muted', text: t.label }, svg));
+    cap(X.tok + 20, Y0 - 10, '입력 토큰');
+    // Q (12 x d)
+    const qRows = TOK.map((t) => { const g = el('g', {}, svg); for (let d = 0; d < D; d++) el('rect', { x: X.q + d * C, y: ry(t.i) + 1, width: C - 2, height: R - 2, rx: 2, fill: KINDS[t.k], 'fill-opacity': 0.35 + 0.15 * d }, g); return g; });
+    cap(X.q + D * C / 2, Y0 - 10, 'Q  (12 × d)');
+    sym(X.q + D * C + 26, mid, '×');
+    // K^T (d x 9)
+    const ktCols = KEYS.map((k, j) => { const g = el('g', {}, svg); for (let d = 0; d < D; d++) el('rect', { x: X.kt + j * C, y: ry(4) + d * R + 1, width: C - 2, height: R - 2, rx: 2, fill: KINDS[TOK[k].k], 'fill-opacity': 0.35 + 0.15 * d }, g); return g; });
+    cap(X.kt + KEYS.length * C / 2, ry(4) - 10, 'Kᵀ  (d × 9)');
+    sym(X.kt + KEYS.length * C + 15, mid, '→');
+    // score (12 x 9)
+    const sc = TOK.map((t) => KEYS.map((k, j) => el('rect', { x: X.sc + j * C, y: ry(t.i) + 1, width: C - 2, height: R - 2, rx: 2, fill: 'var(--accent)', 'fill-opacity': 0.06 }, svg)));
+    cap(X.sc + KEYS.length * C / 2, Y0 - 10, 'softmax(QKᵀ)  (12 × 9)');
+    KEYS.forEach((k, j) => el('rect', { x: X.sc + j * C + 3, y: ry(12) + 5, width: C - 8, height: 6, rx: 2, fill: KINDS[TOK[k].k] }, svg));
+    cap(X.sc + KEYS.length * C / 2, ry(12) + 26, 'key 9개 (빠진 3개 없음)', { 'font-size': 10.5 });
+    sym(X.sc + KEYS.length * C + 22, mid, '×');
+    // V (9 x d)
+    const vRows = KEYS.map((k, j) => { const g = el('g', {}, svg); for (let d = 0; d < D; d++) el('rect', { x: X.v + d * C, y: ry(1.5) + j * R + 1, width: C - 2, height: R - 2, rx: 2, fill: KINDS[TOK[k].k], 'fill-opacity': 0.35 + 0.15 * d }, g); return g; });
+    cap(X.v + D * C / 2, ry(1.5) - 10, 'V  (9 × d)');
+    sym(X.v + D * C + 24, mid, '=');
+    // O (12 x d)
+    const oRows = TOK.map((t) => { const g = el('g', {}, svg); for (let d = 0; d < D; d++) el('rect', { x: X.o + d * C, y: ry(t.i) + 1, width: C - 2, height: R - 2, rx: 2, fill: `rgb(${OUT[t.i].map(Math.round)})`, 'fill-opacity': 0.4 + 0.15 * d }, g); return g; });
+    cap(X.o + D * C / 2, Y0 - 10, 'O  (12 × d)');
+    sym(X.o + D * C + 26, mid, '→');
+    // output tokens
+    const outEls = TOK.map((t) => el('rect', { x: X.out, y: ry(t.i) + 1, width: 40, height: R - 2, rx: 3, fill: `rgb(${OUT[t.i].map(Math.round)})` }, svg));
+    cap(X.out + 20, Y0 - 10, '출력 토큰');
+    const outCheck = TOK.map((t) => el('text', { x: X.out + 48, y: ry(t.i) + 12, 'font-size': 11, class: 't-strong', text: DROPPED.has(t.i) ? '← 빠졌던 토큰' : '' }, svg));
+    // highlight row
+    const hl = el('rect', { x: X.tok - 4, y: 0, width: X.out + 48 - X.tok, height: R + 2, rx: 4, fill: 'none', stroke: 'var(--accent)', 'stroke-width': 1.5, 'pointer-events': 'none' }, svg);
+
+    // --- symmetric comparison (bottom)
+    const BY = 370;
+    el('text', { x: 16, y: BY - 18, class: 't-strong', 'font-size': 13.5, text: '기존 방식: query도 merge → 출력이 9개뿐 → 빈 자리는 unmerge(복사)로 채워야 함' }, svg);
+    const BR = 9;
+    const qKeep = TOK.filter((t) => !DROPPED.has(t.i));
+    qKeep.forEach((t, r) => el('rect', { x: 128, y: BY + r * BR, width: 60, height: BR - 1.5, rx: 2, fill: KINDS[t.k], 'fill-opacity': 0.6 }, svg));
+    el('text', { x: 158, y: BY + 9 * BR + 16, 'text-anchor': 'middle', 'font-size': 11, class: 'mono', text: "Q' (9 × d)" }, svg);
+    el('text', { x: 222, y: BY + 46, 'font-size': 12, text: '→  attention  →' }, svg);
+    qKeep.forEach((t, r) => el('rect', { x: 340, y: BY + r * BR, width: 60, height: BR - 1.5, rx: 2, fill: KINDS[t.k], 'fill-opacity': 0.9 }, svg));
+    el('text', { x: 370, y: BY + 9 * BR + 16, 'text-anchor': 'middle', 'font-size': 11, class: 'mono', text: "O' (9 × d)" }, svg);
+    el('text', { x: 420, y: BY + 46, 'font-size': 12, text: '→  출력 토큰 12개 자리에 배치  →' }, svg);
+    const symOut = TOK.map((t, r) => {
+      const x = 640 + (r % 6) * 34, y = BY + Math.floor(r / 6) * 34;
+      const drop = DROPPED.has(t.i);
+      el('rect', { x, y, width: 30, height: 30, rx: 4, fill: drop ? 'none' : KINDS[t.k], stroke: drop ? 'var(--bad)' : 'none', 'stroke-width': 1.6, 'stroke-dasharray': drop ? '3 2' : '' }, svg);
+      return drop ? el('text', { x: x + 15, y: y + 20, 'text-anchor': 'middle', 'font-size': 15, class: 't-strong', style: 'fill:var(--bad)', text: '?' }, svg) : null;
+    });
+    void symOut;
+    el('text', { x: 640, y: BY + 84, 'font-size': 11.5, text: '빈 3칸: 합쳐진 짝의 출력을 복사 → 두 자리가 같은 값, 세부 손실' }, svg);
+
+    function setRow(r) {
+      const w = W[r], dropped = DROPPED.has(r);
+      hl.setAttribute('y', ry(r));
+      tokEls.forEach((e, i) => e.setAttribute('opacity', i === r ? 1 : 0.35));
+      qRows.forEach((g, i) => g.setAttribute('opacity', i === r ? 1 : 0.2));
+      oRows.forEach((g, i) => g.setAttribute('opacity', i <= r ? 1 : 0.12));
+      outEls.forEach((e, i) => e.setAttribute('opacity', i <= r ? 1 : 0.12));
+      outCheck.forEach((e, i) => e.setAttribute('opacity', i <= r && DROPPED.has(i) ? 1 : 0));
+      sc.forEach((row, i) => row.forEach((c, j) => c.setAttribute('fill-opacity', i === r ? (0.08 + 0.92 * w[j]).toFixed(3) : i < r ? (0.05 + 0.4 * W[i][j]).toFixed(3) : 0.04)));
+      ktCols.forEach((g, j) => g.setAttribute('opacity', (0.25 + 0.75 * Math.min(1, w[j] * 2)).toFixed(3)));
+      vRows.forEach((g, j) => g.setAttribute('opacity', (0.25 + 0.75 * Math.min(1, w[j] * 2)).toFixed(3)));
+      const top = KEYS[w.indexOf(Math.max(...w))];
+      const t = TOK[r];
+      title.textContent = `query ${r + 1}/12 · 토큰 ${t.label} (${KIND_KO[t.k]})${dropped ? ' — key/value에서 빠진 토큰' : ''}`;
+      sub.textContent = dropped
+        ? `key/value에서는 빠졌지만 query로는 남아 있습니다. 가장 큰 가중치는 frame t+1의 짝(${TOK[top].label})으로 가고, 자기 출력 행을 받습니다.`
+        : `줄어든 key 9개와 점수를 매기고(진한 칸 = 큰 가중치), value를 그 비율로 섞어 출력 ${r + 1}번 행을 만듭니다.`;
+    }
+
+    // timeline: dropped rows linger longer
+    const DUR = TOK.map((t) => (DROPPED.has(t.i) ? 2.2 : 0.9));
+    const T = DUR.reduce((a, b) => a + b, 0) + 2.5;
+    const rowAt = (t) => { let acc = 0; for (let r = 0; r < 12; r++) { acc += DUR[r]; if (t < acc) return r; } return 11; };
+    let start = performance.now(), paused = reduceMotion, raf = null, visible = false, hover = null, pausedAt = 0;
+    const loop = (now) => { if (hover === null) setRow(rowAt(((now - start) / 1000) % T)); raf = requestAnimationFrame(loop); };
+    const play = () => { start = performance.now() - pausedAt * 1000; if (!raf) raf = requestAnimationFrame(loop); };
+    const stop = () => { if (raf) cancelAnimationFrame(raf); raf = null; pausedAt = ((performance.now() - start) / 1000) % T; };
+    const btn = $('#nu-toggle');
+    btn.addEventListener('click', () => { paused = !paused; btn.textContent = paused ? '재생' : '일시정지'; if (paused) stop(); else if (visible) play(); });
+    new IntersectionObserver((es) => es.forEach((e) => { visible = e.isIntersecting; if (visible && !paused) play(); else if (!visible && raf) stop(); })).observe(svg);
+    // hover a row to inspect it
+    svg.addEventListener('pointermove', (ev) => {
+      const pt = svg.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY;
+      const p = pt.matrixTransform(svg.getScreenCTM().inverse());
+      const r = Math.floor((p.y - Y0) / R);
+      if (p.y >= Y0 && r >= 0 && r < 12 && p.x > X.tok - 30 && p.x < X.out + 60) { hover = r; setRow(r); } else hover = null;
+    });
+    svg.addEventListener('pointerleave', () => { hover = null; });
+    const freeze = new URLSearchParams(location.search).get('nu');
+    if (freeze !== null) { paused = true; pausedAt = +freeze; }
+    if (paused) btn.textContent = '재생';
+    setRow(freeze !== null ? rowAt(+freeze) : paused ? 2 : 0);
   }
 
   /* ---------------- M1 layers ---------------- */
@@ -1222,7 +1277,7 @@
 
   function init() {
     renderMath();
-    pipelineAnim(); hero(); explorer(); pipeline(); asym(); mergeUnmergeAnim(); resolutionDemo(); layers(); epipolar(); results(); runtime(); attentionViewer(); schedule();
+    pipelineAnim(); hero(); explorer(); pipeline(); noUnmergeAnim(); mergeUnmergeAnim(); resolutionDemo(); layers(); epipolar(); results(); runtime(); attentionViewer(); schedule();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();
