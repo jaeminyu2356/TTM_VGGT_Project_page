@@ -5,5 +5,6 @@ Static project page (no build step) for TTM, a training-free add-on that lets VG
 - `index.html` — page content
 - `static/css/style.css` — styles (light/dark)
 - `static/js/main.js` — all figures and interactive demos (hero animation, attention-cost explorer, epipolar demo, result charts)
+- `static/img/attention/` — real VGGT-1B global attention maps (`L??` = per-layer originals, `S??` = panels cropped from the 24-layer summary)
 
 Preview locally: `python3 -m http.server` and open http://localhost:8000.

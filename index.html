@@ -25,10 +25,10 @@
   <!-- ===== Teaser animation ===== -->
   <section class="wrap teaser">
     <figure class="card">
-      <svg id="hero-anim" viewBox="0 0 960 380" role="img" aria-label="애니메이션: 프레임 쌍 안에서 토큰을 짝지어 중복 토큰을 key/value에서 제거하고, attention 행렬이 N×N에서 N×N_red로 줄어드는 과정"></svg>
+      <svg id="hero-anim" viewBox="0 0 960 380" role="img" aria-label="애니메이션: 이웃 프레임 사이에서 토큰을 짝지어 중복 토큰을 key/value에서 제거하고, attention 행렬이 N×N에서 N×N_red로 줄어드는 과정"></svg>
       <figcaption>
         <button id="hero-toggle" class="chip" type="button">일시정지</button>
-        <span>인접한 영상 프레임은 거의 똑같습니다. TTM은 프레임을 겹치지 않는 쌍으로 묶고, 각 쌍에서 frame <i>t</i>의 토큰을
+        <span>인접한 영상 프레임은 거의 똑같습니다. TTM은 frame <i>t</i>의 토큰을
         frame <i>t+1</i>의 짝과 매칭해 중복본을 <b>key/value</b>에서만 뺍니다. 모든 토큰은 <b>query</b>로 남기 때문에
         attention 행렬은 <i>N×N</i>에서 <i>N×N<sub>red</sub></i>로 줄어들고, unmerge 단계가 필요 없습니다.</span>
       </figcaption>
@@ -54,7 +54,7 @@
     <ul class="modules">
       <li><span class="tag">M1</span><b>Layer-Selective Storage</b>: prediction head가 실제로 읽는 4개 레이어의 중간 특징만 저장해서, 저장되는 activation의 약 80%를 없앱니다.</li>
       <li><span class="tag">M2</span><b>KV-Asymmetric Merge</b>: query는 전체 해상도 그대로 두고 key/value만 merge된 토큰으로 계산합니다. 오류가 생기기 쉬운 unmerge 단계가 없어지고, 토큰 오염도 구조적으로 막힙니다.</li>
-      <li><span class="tag">M5</span><b>Epipolar-Constrained Merge</b>: 같은 모델을 저해상도로 한 번 더 돌려 얻은 카메라 pose로 epipolar 거리를 계산하고, 이 거리로 토큰 유사도에 gate를 겁니다.</li>
+      <li><span class="tag">M5</span><b>Epipolar-Constrained Merge</b>: 같은 모델을 저해상도로 한 번 더 돌려 얻은 카메라 pose로 epipolar 거리를 계산하고, epipolar line 근처의 패치만 merge 후보로 남깁니다.</li>
     </ul>
     <p>모든 구성 요소는 VGGT의 가중치를 그대로(frozen) 재사용하므로 fine-tuning이 필요 없고, FlashAttention 같은 효율적인 attention 커널과 함께 쓸 수 있습니다.</p>
   </section>
@@ -65,6 +65,9 @@
     <p>VGGT는 원래 이미지 사이의 시간 정보 없이도 동작하는 모델입니다. 입력 순서를 섞어도 되는 이미지 묶음으로 취급하죠.
       하지만 실제 입력이 <b>영상</b>이라면 상황이 다릅니다. 이웃한 프레임은 거의 같은 장면을 보고 있고, 그만큼 토큰도 중복됩니다.
       이 중복을 찾아 압축하면, 품질은 유지하면서 메모리와 추론 시간을 줄일 수 있지 않을까요?</p>
+    <p>실제로 VGGT의 global attention map을 그려 보면, 중간 레이어에서 각 query가 <b>다른 프레임의 같은 위치 패치</b>에 강하게 attention하는
+      대각선 패턴이 프레임마다 반복됩니다(<a href="#attn-maps">아래 attention map</a>). 모델 스스로 프레임 간 대응 관계를 찾고 있다는 뜻이고,
+      그만큼 프레임 사이의 토큰이 중복된다는 근거가 됩니다.</p>
   </section>
   <section class="wrap">
     <div class="idea-flow">
@@ -100,7 +103,7 @@
         <div class="explorer-readout" id="matrix-readout"></div>
       </div>
       <p class="note">merge가 적용된 global 레이어 1개, head 1개 기준으로 attention score 개수를 해석적으로 계산한 값입니다(BF16).
-        프레임 쌍마다 frame <i>t</i>에서만 <i>n</i>개를 빼므로 <i>N<sub>red</sub> = SP − (S/2)·n</i>입니다.
+        모든 프레임이 각각 <i>n</i>개씩 빼므로 <i>N<sub>red</sub> = S(P − n)</i>입니다.
         FlashAttention 같은 커널은 이 행렬을 메모리에 다 올리지 않지만, 연산량은 똑같이 늘어나고 TTM의 절감 효과는 그런 커널의 효과와 곱해집니다.</p>
     </div>
   </section>
@@ -110,7 +113,7 @@
     <h2>방법</h2>
     <p>TTM은 VGGT의 alternating-attention 루프만 건드립니다. 프레임 토큰화는 그대로 하고, 24개 블록 중 5번 이후의 tap이 아닌 레이어는
       global attention에서 merge된 key/value를 씁니다. DPT head가 읽는 4개 레이어만 저장하고, 필요하면 저해상도 pre-pass로 카메라 pose를 구해
-      epipolar gate에 사용합니다.</p>
+      epipolar 후보 제한에 사용합니다.</p>
   </section>
   <section class="wrap">
     <figure class="card">
@@ -121,14 +124,14 @@
 
   <!-- Bipartite merging -->
   <section class="wrap prose">
-    <h3>프레임 쌍 단위 bipartite token merging</h3>
-    <p>프레임을 겹치지 않는 쌍 <span class="m">(0,1), (2,3), \dots</span>으로 묶습니다. 각 쌍 <span class="m">(t, t{+}1)</span>에서
+    <h3>프레임 간 bipartite token merging</h3>
+    <p>각 프레임 <span class="m">t</span>는 바로 다음 프레임 <span class="m">t{+}1</span>을 reference로 삼습니다(마지막 프레임은 <span class="m">t{-}1</span>).
       VGGT 자체의 frozen key projection으로 패치 토큰을 투영하고 L2 정규화한 뒤, frame <span class="m">t</span>의 짝수 인덱스 source 토큰마다
       frame <span class="m">t{+}1</span>에서 가장 비슷한 토큰을 찾습니다.</p>
     <div class="eq" data-tex="j^\star(i) = \arg\max_j \,\langle \hat K_t[i],\, \hat K_{t+1}[j] \rangle, \qquad n = \lfloor P_{\text{patch}}\cdot r(\Delta t)\rfloor,\quad r(\Delta t) = r_{\max}\, e^{-\lambda \Delta t_{\text{norm}}}"></div>
     <p>유사도가 가장 높은 <span class="m">n</span>개의 source를 merge합니다. 유사도를 attention 자체의 key 공간에서 계산하므로 별도 네트워크가 필요 없습니다.
       merge 방식은 <b>hard-kept</b>를 씁니다. 두 토큰을 평균내는 soft 방식은 frame <span class="m">t{+}1</span>의 내용이 frame <span class="m">t</span>의 자리로
-      새어 들어가 depth가 흐려지기 때문입니다. 쌍 단위로 묶으면 매칭 비용이 프레임 수에 선형이고, 같은 merge 인덱스를 여러 레이어에서 재사용(index caching)할 수 있습니다.</p>
+      새어 들어가 depth가 흐려지기 때문입니다. 모든 프레임이 같은 개수 <span class="m">n</span>을 빼서 merge 후에도 텐서 모양이 깔끔하게 유지되고, 매칭 비용은 프레임 수에 선형입니다. 같은 merge 인덱스를 여러 레이어에서 재사용(index caching)할 수도 있습니다.</p>
   </section>
 
   <!-- M2 -->
@@ -217,25 +220,28 @@
   <section class="wrap prose" id="m5">
     <h3><span class="tag">M5</span> Epipolar-Constrained Merge</h3>
     <p>겉모양만으로는 짝이 모호합니다. 똑같은 창문이 늘어선 건물 벽면에는 비슷해 보이는 key가 수없이 많습니다. 하지만 기하는 모호하지 않습니다.
-      어떤 패치의 진짜 짝은 다음 프레임에서 반드시 그 패치의 <b>epipolar line</b> 위에 있어야 합니다. M5는 이 직선까지의 거리로 유사도에 gate를 겁니다.</p>
-    <div class="eq" data-tex="s_{ij} = s^{\cos}_{ij}\cdot \exp\!\Big(-\frac{d_{\text{epi}}(i,j)^2}{\sigma^2}\Big),\qquad F_{t,t+1} = K_{t+1}^{-\top}[t_{\text{rel}}]_\times R_{\text{rel}} K_t^{-1}"></div>
+      어떤 패치의 진짜 짝은 다음 프레임에서 반드시 그 패치의 <b>epipolar line</b> 위에 있어야 합니다. M5는 매칭 후보를 이 직선 주변의 band 안으로 제한하고,
+      band 안에서만 겉모양(cosine 유사도)으로 짝을 고릅니다. 기하가 검색 범위를 1차원으로 좁히고, 겉모양이 그 위에서 짝을 가려내는 구조입니다.</p>
+    <div class="eq" data-tex="j^\star(i) = \arg\max_{j\,:\,d_{\text{epi}}(i,j)\,\le\,\tau} \;\langle \hat K_t[i],\, \hat K_{t+1}[j] \rangle,\qquad \tau = 0.05\,W,\qquad F_{t,t+1} = K_{t+1}^{-\top}[t_{\text{rel}}]_\times R_{\text{rel}} K_t^{-1}"></div>
+    <p>후보를 제한해도 merge 개수 <span class="m">n</span>은 그대로라서 메모리와 연산량은 M1+M2와 같고, 어떤 패치를 합칠지만 더 정확해집니다.
+      ablation으로 거리에 따라 유사도를 연속적으로 줄이는 soft gate <span class="m">s_{ij}\cdot\exp(-d_{\text{epi}}^2/\sigma^2)</span>도 구현해 비교했습니다.</p>
     <p>pose는 VGGT 자신에게서 얻습니다. 224 px로 돌리는 <b>Pass 0</b>(M1+M2를 적용한 TTM)은 본 추론의 약 1/10 시간이 걸리고,
-      여기서 얻은 pose로 <span class="m">F</span>를 만든 뒤 518 px로 돌리는 <b>Pass 1</b>의 20개 merge 레이어가 모두 같은 gate를 공유합니다.
-      <span class="m">\sigma\to\infty</span>이면 gate가 모두 1이 되어 M5는 M1+M2와 정확히 같아집니다(수치로 확인).
+      여기서 얻은 pose로 <span class="m">F</span>를 만든 뒤 518 px로 돌리는 <b>Pass 1</b>의 20개 merge 레이어가 모두 같은 band mask를 공유합니다.
+      band가 충분히 넓으면 제약이 사라져 M5는 M1+M2와 같아집니다. pose가 퇴화된 경우(움직임 없음)에도 제약 없이 M1+M2로 돌아갑니다.
       <b>왼쪽 프레임의 패치에 마우스를 올려 보세요.</b></p>
   </section>
   <section class="wrap">
     <div class="card epi">
       <div class="controls">
-        <label>gate 폭 σ <output id="sig-out">0.05 W</output>
+        <label>band 폭 τ <output id="sig-out">0.05 W</output>
           <input id="sig-in" type="range" min="0.01" max="0.5" step="0.01" value="0.05"></label>
         <div class="legend-inline">
           <span><i class="key ring-wrong"></i>겉모양만 본 매칭</span>
-          <span><i class="key ring-right"></i>epipolar gate 적용</span>
+          <span><i class="key ring-right"></i>epipolar band 안에서 매칭</span>
           <span><i class="key line-epi"></i>epipolar line</span>
         </div>
       </div>
-      <canvas id="epi-canvas" aria-label="epipolar gate 인터랙티브 데모"></canvas>
+      <canvas id="epi-canvas" aria-label="epipolar band 인터랙티브 데모"></canvas>
       <p class="note" id="epi-note"></p>
     </div>
   </section>
@@ -276,6 +282,32 @@
       이를 attention map 한 번의 forward로 측정하는 <b>heterogeneity probe</b>(query별 coverage <span class="m">c_\pi</span>)를 만들고,
       이 구간에서 merge를 줄이는 레이어별 배율 <span class="m">r^{(\ell)} = \alpha_\ell\, r_{\max}</span>을 실험했습니다.</p>
   </section>
+  <section class="wrap" id="attn-maps">
+    <div class="card attn-viewer">
+      <div class="controls">
+        <label>global block <output id="attn-out">L12</output>
+          <input id="attn-in" type="range" min="0" max="23" step="1" value="12"></label>
+        <div class="tabs" id="attn-tabs"></div>
+      </div>
+      <div class="attn-body">
+        <figure class="attn-fig">
+          <img id="attn-img" src="static/img/attention/S12.webp" width="229" height="203" alt="VGGT global attention map">
+          <figcaption><span>query ↓ · key →</span><a id="attn-full" href="static/img/attention/L12.webp" target="_blank" rel="noopener">고해상도 원본 보기</a></figcaption>
+        </figure>
+        <div class="attn-text">
+          <div class="attn-kind" id="attn-kind"></div>
+          <p id="attn-desc"></p>
+          <p class="note">VGGT-1B의 실제 global attention map입니다(head 평균, softmax). 8개 프레임 × 프레임당 64개 패치를 뽑아 그렸고,
+            청록색 선이 프레임 경계이고, 행은 query, 열은 key입니다. 레이어마다 색 범위가 다를 수 있으니 레이어끼리 절대값을 비교하지는 마세요. 고해상도 원본은 주대각선(자기 자신)이 색 범위를 차지해 프레임 간 패턴이 흐리게 보일 수 있습니다.</p>
+        </div>
+      </div>
+      <details class="table-view">
+        <summary>24개 레이어 한눈에 보기</summary>
+        <img src="static/img/attention/summary_all_layers.webp" width="1584" height="1188" loading="lazy" alt="24개 global block의 attention map 요약" class="attn-summary">
+      </details>
+    </div>
+  </section>
+
   <section class="wrap">
     <div class="card">
       <div class="tabs" id="sched-tabs" role="tablist"></div>
@@ -293,7 +325,7 @@
     <ul>
       <li>merge는 시간적 중복에 의존하므로, 시점 차이가 큰 희소한 이미지 집합에서는 합칠 토큰이 적습니다.</li>
       <li>DPT tap 레이어는 full attention을 유지하므로 이 레이어들의 비용은 줄지 않습니다.</li>
-      <li>M5는 저해상도 forward를 한 번 더 수행합니다. 상대 pose가 퇴화된 경우 gate는 1로 돌아갑니다.</li>
+      <li>M5는 저해상도 forward를 한 번 더 수행합니다. 상대 pose가 퇴화된 경우 제약 없이 일반 매칭으로 돌아갑니다.</li>
     </ul>
   </section>
 

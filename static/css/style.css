@@ -169,3 +169,13 @@ svg .mono { font-family: "JetBrains Mono", monospace; }
 @media (max-width: 860px) { .idea-flow { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 520px) { .idea-flow { grid-template-columns: 1fr; } }
 .resdemo canvas { width: 100%; display: block; }
+
+.attn-body { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+.attn-fig { margin: 0; }
+.attn-fig img { width: 100%; height: auto; border-radius: 6px; display: block; }
+.attn-fig figcaption { justify-content: space-between; font-size: 12.5px; margin-top: 6px; }
+.attn-kind { font-weight: 600; font-size: 17px; margin-bottom: 4px; }
+.attn-text p { color: var(--text-2); font-size: 14.5px; }
+.attn-summary { width: 100%; height: auto; margin-top: 10px; border-radius: 8px; background: #fff; }
+.attn-viewer .controls .tabs { margin: 0; }
+@media (max-width: 760px) { .attn-body { grid-template-columns: 1fr; } }

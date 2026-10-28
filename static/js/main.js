@@ -78,7 +78,6 @@
     const gFrames = el('g', {}, svg);
     for (let f = 0; f < F; f++) {
       el('text', { x: fx(f) + FW / 2, y: Y0 - 14, 'text-anchor': 'middle', 'font-size': 12, class: 'mono', text: `frame ${f}` }, gFrames);
-      if (f % 2 === 0) el('text', { x: fx(f) + FW + FGAP / 2, y: Y0 + FW + 24, 'text-anchor': 'middle', 'font-size': 11, class: 't-muted', text: `쌍 (${f}, ${f + 1})` }, gFrames);
       for (let r = 0; r < G; r++) for (let c = 0; c < G; c++) {
         const wx = c + f, wy = r;
         const node = el('rect', {
@@ -88,10 +87,10 @@
         tokens.push({ f, r, c, idx: f * G * G + r * G + c, node, dropped: false, match: null });
       }
     }
-    // disjoint frame pairs (0,1), (2,3): even-index sources of frame t merge into frame t+1
-    const N_DROP = 12;
-    for (let f = 0; f < F; f += 2) {
-      const ref = f + 1, dc = -1;
+    // every frame drops N_DROP even-index sources; reference is t+1 (last frame: t-1)
+    const N_DROP = 8;
+    for (let f = 0; f < F; f++) {
+      const ref = f < F - 1 ? f + 1 : f - 1, dc = f < F - 1 ? -1 : 1;
       const cands = tokens.filter((t) => t.f === f && ((t.r * G + t.c) % 2 === 0) && t.c + dc >= 0 && t.c + dc < G)
         .sort((a, b) => hash(a.idx, 7) - hash(b.idx, 7)).slice(0, N_DROP);
       cands.forEach((t) => { t.dropped = true; t.match = tokens[ref * G * G + t.r * G + (t.c + dc)]; });
@@ -121,7 +120,7 @@
 
     const STEPS = [
       ['1 · 영상은 S개 프레임 × P개 토큰', '인접한 프레임은 약간의 시차만 있을 뿐 거의 같은 장면을 봅니다.'],
-      ['2 · 프레임 쌍 안에서 frame t의 토큰을 frame t+1의 짝과 매칭', 'VGGT의 frozen key 공간에서 cosine 유사도로 찾으므로 학습이 필요 없습니다.'],
+      ['2 · frame t의 토큰을 frame t+1의 짝과 매칭 (마지막 프레임은 t−1)', 'VGGT의 frozen key 공간에서 cosine 유사도로 찾으므로 학습이 필요 없습니다.'],
       ['3 · 중복된 토큰을 key/value에서만 제거', '점선 토큰은 K/V에서 빠지지만 query로는 남아 있어서, 모든 위치가 출력을 그대로 받습니다.'],
       ['4 · attention 행렬 축소: N×N → N×N_red', '행(query)은 전체 길이 그대로라 unmerge할 것이 없습니다.'],
     ];
@@ -189,7 +188,7 @@
       const S = +sIn.value, r = +rIn.value;
       $('#s-out').textContent = S; $('#r-out').textContent = r.toFixed(2);
       const n = Math.min(Math.floor(r * P_PATCH), Math.floor(P_PATCH / 2));
-      const N = S * P, Nred = S * P - Math.floor(S / 2) * n; // only frame t of each pair loses n tokens
+      const N = S * P, Nred = S * (P - n);
       const side = SIDE * S / SMAX;
       vRect.setAttribute('width', side); vRect.setAttribute('height', side);
       tRect.setAttribute('width', side * Nred / N); tRect.setAttribute('height', side);
@@ -253,7 +252,7 @@
     arrow(372, 46, 400, 46);
     box(402, 22, 120, 48, 'Poses → F', 'F = K⁻ᵀ[t]ₓR K⁻¹');
     arrow(524, 46, 552, 46);
-    box(554, 22, 160, 48, 'Epipolar gate', '모든 merge 레이어가 공유', true);
+    box(554, 22, 160, 48, 'Epipolar band mask', '모든 merge 레이어가 공유', true);
     arrow(634, 72, 634, BY - 22, { 'stroke-dasharray': '4 3' });
     el('text', { x: 642, y: 112, 'font-size': 11, text: 'M5 (선택)' }, svg);
     // legend
@@ -284,8 +283,8 @@
     // strip of tokens: 4 frames x 4 tokens; dropped = index 1 and 3 of frames (not last)
     const FULL = [], RED = [];
     for (let f = 0; f < 4; f++) for (let i = 0; i < 4; i++) { FULL.push({ f, i }); if (i % 2 === 0) RED.push({ f, i }); else if (f === 3 && i === 1) RED.push({ f, i }); }
-    // disjoint pairs (0,1), (2,3): frame t of each pair drops its odd tokens
-    const isDropped = (t) => t.f % 2 === 0 && t.i % 2 === 1;
+    // every frame drops the same number of tokens
+    const isDropped = (t) => t.i === 1;
     RED.length = 0; FULL.forEach((t) => { if (!isDropped(t)) RED.push(t); });
     const strip = (x, y, arr, opts = {}) => {
       arr.forEach((t, k) => {
@@ -388,10 +387,10 @@
         else s = 0.15 + 0.3 * hash(px, py, x, y);
         const dx = (x + .5) * PS - cxp, dy = (y + .5) * PS - cyp;
         const d = Math.abs(dx * uy - dy * ux);
-        const g = Math.exp(-(d * d) / (sigma * sigma));
-        gates.push(g);
+        const inBand = d <= sigma; // hard candidate restriction (core); sigma = band width tau
+        gates.push(inBand ? 1 : 0);
         if (!bestA || s > bestA.s) bestA = { x, y, s };
-        if (!bestG || s * g > bestG.s) bestG = { x, y, s: s * g };
+        if (inBand && (!bestG || s > bestG.s)) bestG = { x, y, s };
       }
       const inView = tx >= 0 && ty >= 0 && tx < COLS && ty < ROWS;
       return { bestA, bestG, gates, truth: inView ? { x: tx, y: ty } : null };
@@ -440,10 +439,10 @@
       drawFrame(0, 0, 0, 'frame t  (패치에 마우스를 올려 보세요)');
       drawFrame(R, SHIFT[0], SHIFT[1], 'frame t+1');
       const e = evaluate(hover.x, hover.y, sigma);
-      // gate heat overlay
+      // band overlay
       e.gates.forEach((g, i) => {
         const x = i % COLS, y = Math.floor(i / COLS);
-        ctx.fillStyle = `rgba(245,213,71,${(g * 0.55).toFixed(3)})`;
+        ctx.fillStyle = `rgba(245,213,71,${(g * 0.45).toFixed(3)})`;
         ctx.fillRect(R + x * PS, TOP + y * PS, PS, PS);
       });
       // epipolar line
@@ -459,10 +458,10 @@
       ring(R, e.bestA, css('--bad'), same ? 17 : 13);
       ring(R, e.bestG, css('--s1'), 12);
       const ok = (p) => e.truth && p.x === e.truth.x && p.y === e.truth.y;
-      if (!e.truth) note.textContent = '이 패치의 짝은 frame t+1에서 화면 밖으로 나갔습니다. gate는 직선 근처 후보만 남기므로 merge 신뢰도가 낮게 유지됩니다.';
-      else if (ok(e.bestA) && ok(e.bestG)) note.textContent = '여기서는 둘 다 진짜 짝을 찾습니다. 모호하지 않은 매칭에서는 gate가 방해하지 않습니다.';
-      else if (ok(e.bestG)) note.textContent = `겉모양만 보면 직선에서 벗어난, 비슷하게 생긴 ${CLS_KO[cls(hover.x, hover.y)]} 패치를 고릅니다(빨강). epipolar gate가 이를 억제하고 진짜 짝을 찾아냅니다(파랑).`;
-      else note.textContent = 'σ가 매우 크면 gate가 거의 1이 되어, M5는 겉모양 매칭(M1+M2)과 같아집니다.';
+      if (!e.truth) note.textContent = '이 패치의 짝은 frame t+1에서 화면 밖으로 나갔습니다. band 안에는 비슷한 후보가 없어 유사도가 낮고, top-n merge에서 선택되지 않습니다.';
+      else if (ok(e.bestA) && ok(e.bestG)) note.textContent = '여기서는 둘 다 진짜 짝을 찾습니다. 모호하지 않은 매칭에서는 band 제한이 방해하지 않습니다.';
+      else if (ok(e.bestG)) note.textContent = `겉모양만 보면 직선에서 벗어난, 비슷하게 생긴 ${CLS_KO[cls(hover.x, hover.y)]} 패치를 고릅니다(빨강). 노란 band 안에서만 찾으면 진짜 짝이 나옵니다(파랑).`;
+      else note.textContent = 'band가 너무 넓으면 제약이 사라져, M5는 겉모양 매칭(M1+M2)과 같아집니다.';
     }
     function pick(ev) {
       const r = cv.getBoundingClientRect(), k = LW / r.width;
@@ -857,6 +856,44 @@
     el('text', { x: 0, y: Y + H + 24, 'font-size': 11.5, class: 't-muted', text: '구간에 마우스를 올리면 세부 항목이 보입니다. 같은 장면에서 vanilla VGGT는 132.5 s.' }, svg);
   }
 
+  /* ---------------- Real attention-map viewer ---------------- */
+  function attentionViewer() {
+    const input = $('#attn-in'); if (!input) return;
+    const img = $('#attn-img'), out = $('#attn-out'), kind = $('#attn-kind'), desc = $('#attn-desc');
+    // pattern read off the maps in Video-VGGT/attention_map
+    const KIND = {
+      spread: ['넓게 퍼진 attention', '대부분의 query가 많은 key에 attention을 고르게 나눠 줍니다. 아직 지역적인 저수준 특징을 섞는 단계입니다.'],
+      hub: ['세로 줄무늬: 소수의 hub key에 집중', '거의 모든 query가 같은 몇 개의 key(세로 줄)를 봅니다. query마다 보는 대상이 비슷하므로, K/V를 줄여도 영향이 적은 구간입니다.'],
+      diag: ['대각선: 프레임 간 대응', '각 프레임 블록 안에 대각선이 나타납니다. query가 다른 프레임에 있는 자기 짝 패치를 콕 집어 보는 것으로, 모델이 프레임 사이의 대응 관계를 직접 찾고 있다는 뜻입니다. query마다 서로 다른 key를 보는 heterogeneous 구간이라, 이 구간의 K/V를 많이 줄이면 대응 정보가 손실될 위험이 큽니다.'],
+      mixed: ['hub + 대각선 혼합', 'hub 열과 프레임 간 대각선이 함께 보입니다. 대응 정보가 일부 남아 있는 과도기 레이어입니다.'],
+    };
+    const LAYER = ['spread', 'spread', 'hub', 'hub', 'hub', 'hub', 'hub', 'hub', 'hub', 'hub',
+      'diag', 'diag', 'diag', 'diag', 'diag', 'diag', 'mixed', 'hub', 'hub', 'hub', 'hub', 'mixed', 'hub', 'hub'];
+    // preload
+    for (let l = 0; l < 24; l++) { const im = new Image(); im.src = `static/img/attention/S${String(l).padStart(2, '0')}.webp`; }
+    const tabs = $('#attn-tabs');
+    const JUMPS = [['초기 L2', 2], ['중간 L12', 12], ['후기 L19', 19]];
+    function show(l) {
+      input.value = l;
+      const id = 'L' + String(l).padStart(2, '0');
+      img.src = `static/img/attention/S${id.slice(1)}.webp`;
+      $('#attn-full').href = `static/img/attention/${id}.webp`;
+      img.alt = `VGGT global block ${l} attention map`;
+      out.textContent = id + (TAPS.includes(l) ? ' · DPT tap' : '');
+      const [k, d] = KIND[LAYER[l]];
+      kind.textContent = k; desc.textContent = d;
+      [...tabs.children].forEach((b) => b.setAttribute('aria-selected', +b.dataset.l === l));
+    }
+    JUMPS.forEach(([t, l]) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = t; b.dataset.l = l;
+      b.addEventListener('click', () => show(l));
+      tabs.appendChild(b);
+    });
+    input.addEventListener('input', () => show(+input.value));
+    show(12);
+  }
+
   /* ---------------- Layer schedule ---------------- */
   function schedule() {
     const svg = $('#sched'); if (!svg) return;
@@ -904,7 +941,7 @@
 
   function init() {
     renderMath();
-    hero(); explorer(); pipeline(); asym(); mergeUnmergeAnim(); resolutionDemo(); layers(); epipolar(); results(); runtime(); schedule();
+    hero(); explorer(); pipeline(); asym(); mergeUnmergeAnim(); resolutionDemo(); layers(); epipolar(); results(); runtime(); attentionViewer(); schedule();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();
