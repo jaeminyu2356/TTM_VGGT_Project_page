@@ -179,3 +179,25 @@ svg .mono { font-family: "JetBrains Mono", monospace; }
 .attn-summary { width: 100%; height: auto; margin-top: 10px; border-radius: 8px; background: #fff; }
 .attn-viewer .controls .tabs { margin: 0; }
 @media (max-width: 760px) { .attn-body { grid-template-columns: 1fr; } }
+
+.tldr { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 8px; }
+.tldr-item { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+.tldr-item p { margin: 6px 0 0; font-size: 15px; color: var(--text-2); }
+.tldr-item b { color: var(--text); }
+.tldr-k { font-size: 12px; font-weight: 700; letter-spacing: .04em; color: var(--accent); }
+@media (max-width: 760px) { .tldr { grid-template-columns: 1fr; } }
+.toc { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 18px; margin-top: 16px; font-size: 14px; }
+.toc a { color: var(--text-2); }
+.easy {
+  margin: 12px 0 16px; padding: 12px 16px; border-radius: 10px; background: var(--accent-soft);
+  font-size: 15px; color: var(--text); line-height: 1.7;
+}
+.easy b { display: block; font-size: 12px; letter-spacing: .04em; color: var(--accent); margin-bottom: 2px; }
+.glossary { margin-top: 18px; border: 1px solid var(--border); border-radius: 10px; padding: 10px 16px; background: var(--surface); }
+.glossary summary { cursor: pointer; font-weight: 600; }
+.glossary dl { margin: 10px 0 4px; display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; font-size: 14.5px; }
+.glossary dt { font-weight: 600; }
+.glossary dd { margin: 0; color: var(--text-2); }
+@media (max-width: 560px) { .glossary dl { grid-template-columns: 1fr; } .glossary dd { margin-bottom: 6px; } }
+details.math { margin: 10px 0; }
+details.math summary { cursor: pointer; font-size: 13.5px; color: var(--text-2); }

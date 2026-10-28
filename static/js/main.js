@@ -55,6 +55,287 @@
     document.querySelectorAll('.eq').forEach((n) => katex.render(n.dataset.tex, n, { displayMode: true, throwOnError: false }));
   }
 
+  /* ---------------- Full pipeline animation (top of page) ---------------- */
+  function pipelineAnim() {
+    const svg = $('#pipe-anim'); if (!svg) return;
+    const defs = el('defs', {}, svg);
+    const mk = el('marker', { id: 'pa-arr', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: 'auto' }, defs);
+    el('path', { d: 'M0,0 L10,5 L0,10 z', fill: 'var(--accent)' }, mk);
+    let clipN = 0;
+
+    // synthetic street-facade frame; `shift` pans the camera (fraction of width)
+    function thumb(parent, w, h, shift) {
+      const g = el('g', {}, parent);
+      const id = 'pa-clip' + (clipN++);
+      el('rect', { x: 0, y: 0, width: w, height: h, rx: 4 }, el('clipPath', { id }, defs));
+      const c = el('g', { 'clip-path': `url(#${id})` }, g);
+      el('rect', { width: w, height: h, fill: 'var(--tok-a)' }, c);
+      const dx = -shift * w;
+      el('rect', { x: dx + w * 0.08, y: h * 0.22, width: w * 1.1, height: h * 0.58, fill: 'var(--tok-b)' }, c);
+      for (let i = 0; i < 9; i++) for (let j = 0; j < 3; j++)
+        el('rect', { x: dx + w * (0.14 + i * 0.13), y: h * (0.3 + j * 0.16), width: w * 0.06, height: h * 0.08, fill: 'var(--text-3)', 'fill-opacity': 0.75 }, c);
+      el('circle', { cx: dx + w * 0.62, cy: h * 0.74, r: h * 0.11, fill: 'var(--s2)' }, c);
+      el('rect', { y: h * 0.8, width: w, height: h * 0.2, fill: 'var(--tok-c)' }, c);
+      el('rect', { width: w, height: h, rx: 4, fill: 'none', stroke: 'var(--border)' }, g);
+      return g;
+    }
+    const at = (g, x, y, sc = 1) => g.setAttribute('transform', `translate(${x} ${y}) scale(${sc})`);
+    const stage = (name) => el('g', { 'data-stage': name }, svg);
+    const label = (parent, x, y, text, extra = {}) => el('text', { x, y, 'text-anchor': 'middle', 'font-size': 12, text, ...extra }, parent);
+    function frustum(parent, x, y, ang, txt) {
+      const g = el('g', { transform: `translate(${x} ${y}) rotate(${ang})` }, parent);
+      el('path', { d: 'M0,0 L22,-12 L22,12 Z', fill: 'var(--accent-soft)', stroke: 'var(--accent)', 'stroke-width': 1.5 }, g);
+      el('circle', { r: 3, fill: 'var(--accent)' }, g);
+      if (txt) label(parent, x, y + 28, txt, { 'font-size': 11 });
+      return g;
+    }
+
+    const STAGES = [
+      { name: '① 입력', t0: 0, t1: 3, title: '① 입력: 영상에서 뽑은 S개 프레임', sub: 'VGGT는 원래 순서 정보 없이 이미지를 보지만, 영상이라면 이웃 프레임은 거의 같은 장면입니다.' },
+      { name: '② Pose (Pass 0)', t0: 3, t1: 7, title: '② Pass 0: 아주 낮은 해상도로 한 번 빠르게 실행', sub: '224 px로 줄여 돌리면 전체 시간의 약 10%로 카메라 pose(위치·방향)를 얻을 수 있습니다.' },
+      { name: '③ Epipolar band', t0: 7, t1: 11, title: '③ pose로 epipolar line 계산', sub: 'frame t의 한 점은 frame t+1에서 이 선 위 어딘가에 있습니다. 짝 후보를 노란 band 안으로 제한합니다.' },
+      { name: '④ 토큰 매칭', t0: 11, t1: 15.5, title: '④ Pass 1 (518 px): 토큰으로 나누고 짝 찾기', sub: 'band 안에서 가장 닮은 짝을 찾고, 중복 토큰(점선)은 key/value에서 뺍니다. query로는 그대로 남습니다.' },
+      { name: '⑤ 24개 블록', t0: 15.5, t1: 21.5, title: '⑤ 24개 블록 통과: query는 전부, key/value는 줄여서', sub: 'attention 비용은 key/value 길이에 비례하므로 줄어들고, 출력은 query 수만큼 그대로 나옵니다. head가 읽는 4개 층만 저장합니다.' },
+      { name: '⑥ 출력', t0: 21.5, t1: 26, title: '⑥ 출력: depth · point map · camera pose', sub: '원래 VGGT와 같은 형식과 해상도로 나옵니다. 그 사이 메모리는 2.1배, 시간은 7.5배 줄었습니다.' },
+    ];
+    const T = 26;
+    const title = el('text', { x: 480, y: 30, 'text-anchor': 'middle', class: 't-strong', 'font-size': 16 }, svg);
+    const sub = el('text', { x: 480, y: 52, 'text-anchor': 'middle', 'font-size': 12.5 }, svg);
+
+    // ① input frames
+    const g1 = stage('in');
+    const in1 = [0, 1, 2, 3].map((i) => { const g = thumb(g1, 170, 124, i * 0.05); label(g1, 135 + i * 230, 290, `frame ${i}`, { class: 'mono' }); return g; });
+    const pan = el('text', { x: 480, y: 330, 'text-anchor': 'middle', 'font-size': 12.5, class: 't-muted', text: '카메라가 조금씩 움직이며 찍은 프레임 → 대부분의 내용이 겹칩니다' }, g1);
+
+    // ② pass 0
+    const g2 = stage('pose');
+    const in2 = [0, 1, 2, 3].map((i) => thumb(g2, 170, 124, i * 0.05));
+    const box = el('rect', { x: 400, y: 150, width: 160, height: 100, rx: 10, fill: 'var(--surface-2)', stroke: 'var(--border)' }, g2);
+    void box;
+    label(g2, 480, 192, 'VGGT + TTM', { class: 't-strong', 'font-size': 13 });
+    label(g2, 480, 212, '224 px, 저해상도', { 'font-size': 11.5 });
+    const bar2 = el('rect', { x: 416, y: 226, height: 8, rx: 4, fill: 'var(--accent)' }, g2);
+    el('rect', { x: 416, y: 226, width: 128, height: 8, rx: 4, fill: 'none', stroke: 'var(--border)' }, g2);
+    const traj = el('path', { d: 'M640,280 C 700,200 790,170 900,190', fill: 'none', stroke: 'var(--accent)', 'stroke-dasharray': '4 4', 'stroke-width': 1.5 }, g2);
+    const camPts = [[650, 266, -60], [730, 206, -35], [815, 182, -15], [895, 190, 5]];
+    const cams = camPts.map(([x, y, a], i) => frustum(el('g', {}, g2), x, y, a, `cam ${i}`).parentNode);
+    label(g2, 770, 320, '카메라 pose (위치·방향)', { class: 't-strong' });
+
+    // ③ epipolar
+    const g3 = stage('epi');
+    const F3 = [[110, 100], [540, 100]], W3 = 310, H3 = 226;
+    const f3a = thumb(g3, W3, H3, 0), f3b = thumb(g3, W3, H3, 0.05);
+    at(f3a, ...F3[0]); at(f3b, ...F3[1]);
+    label(g3, F3[0][0] + W3 / 2, 352, 'frame t', { class: 'mono' }); label(g3, F3[1][0] + W3 / 2, 352, 'frame t+1', { class: 'mono' });
+    const P = [F3[0][0] + W3 * 0.47, F3[0][1] + H3 * 0.46];
+    const pt = el('circle', { cx: P[0], cy: P[1], r: 7, fill: 'none', stroke: '#fff', 'stroke-width': 3 }, g3);
+    const ptIn = el('circle', { cx: P[0], cy: P[1], r: 7, fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2 }, g3);
+    const clip3 = 'pa-clip' + (clipN++);
+    el('rect', { x: F3[1][0], y: F3[1][1], width: W3, height: H3, rx: 4 }, el('clipPath', { id: clip3 }, defs));
+    const g3c = el('g', { 'clip-path': `url(#${clip3})` }, g3);
+    const L0 = [F3[1][0] - 10, F3[1][1] + 40], L1 = [F3[1][0] + W3 + 10, F3[1][1] + H3 - 20];
+    const band = el('path', { d: `M${L0[0]},${L0[1] - 22} L${L1[0]},${L1[1] - 22} L${L1[0]},${L1[1] + 22} L${L0[0]},${L0[1] + 22} Z`, fill: '#f5d547', 'fill-opacity': 0.4 }, g3c);
+    const line = el('path', { d: `M${L0[0]},${L0[1]} L${L1[0]},${L1[1]}`, stroke: '#e0b400', 'stroke-width': 2.5 }, g3c);
+    const lineLen = Math.hypot(L1[0] - L0[0], L1[1] - L0[1]);
+    line.setAttribute('stroke-dasharray', lineLen);
+    const ray = el('path', { d: `M${P[0]},${P[1]} C ${P[0] + 120},${P[1] - 110} ${F3[1][0] + 40},${F3[1][1] - 40} ${F3[1][0] + 60},${F3[1][1] + 60}`, fill: 'none', stroke: 'var(--accent)', 'stroke-width': 1.5, 'stroke-dasharray': '4 4', 'marker-end': 'url(#pa-arr)' }, g3);
+    const wrong = el('g', {}, g3);
+    const Wp = [F3[1][0] + W3 * 0.83, F3[1][1] + H3 * 0.34];
+    el('circle', { cx: Wp[0], cy: Wp[1], r: 11, fill: 'none', stroke: 'var(--bad)', 'stroke-width': 2.5 }, wrong);
+    el('text', { x: Wp[0], y: Wp[1] - 18, 'text-anchor': 'middle', 'font-size': 11.5, class: 't-strong', text: '닮았지만 band 밖 → 제외' }, wrong);
+    const right = el('g', {}, g3);
+    const Rp = [F3[1][0] + W3 * 0.42, F3[1][1] + 40 + (H3 - 60) * ((W3 * 0.42 + 10) / (W3 + 20))];
+    el('circle', { cx: Rp[0], cy: Rp[1], r: 11, fill: 'none', stroke: 'var(--s1)', 'stroke-width': 3 }, right);
+    el('text', { x: Rp[0] + 16, y: Rp[1] - 16, 'font-size': 11.5, class: 't-strong', text: 'band 안의 진짜 짝' }, right);
+
+    // ④ tokens + matching
+    const g4 = stage('tok');
+    const GX = 8, GY = 6, CS = 30, CG = 3, ST = CS + CG;
+    const T4 = [[130, 110], [570, 110]];
+    const cellColor = (gx, gy, sh) => {
+      const wx = gx + sh;
+      if (gy < 1) return 'var(--tok-a)';
+      if (gy >= 5) return 'var(--tok-c)';
+      if (wx === 5 && gy === 4) return 'var(--s2)';
+      return (wx % 2 === 1 && gy <= 3) ? 'var(--text-3)' : 'var(--tok-b)';
+    };
+    const cells4 = [[], []];
+    [0, 1].forEach((k) => {
+      for (let gy = 0; gy < GY; gy++) for (let gx = 0; gx < GX; gx++) {
+        cells4[k].push(el('rect', { x: T4[k][0] + gx * ST, y: T4[k][1] + gy * ST, width: CS, height: CS, rx: 4, fill: cellColor(gx, gy, k), 'fill-opacity': 0.85, 'stroke-dasharray': '3 2', stroke: 'var(--text-2)', 'stroke-width': 0 }, g4));
+      }
+      label(g4, T4[k][0] + (GX * ST) / 2, T4[k][1] + GY * ST + 26, k ? 'frame t+1 토큰' : 'frame t 토큰', { class: 'mono' });
+    });
+    // matches: even-index source (gx,gy) in t -> (gx-1, gy) in t+1 (camera panned by one token)
+    const matches = [];
+    for (let gy = 0; gy < GY; gy++) for (let gx = 1; gx < GX; gx++) if ((gy * GX + gx) % 2 === 0 && hash(gx, gy, 3) < 0.55) matches.push([gx, gy]);
+    const arcs4 = matches.map(([gx, gy], i) => {
+      const x1 = T4[0][0] + gx * ST + CS / 2, y1 = T4[0][1] + gy * ST + CS / 2;
+      const x2 = T4[1][0] + (gx - 1) * ST + CS / 2, y2 = T4[1][1] + gy * ST + CS / 2;
+      const p = el('path', { d: `M${x1},${y1} C ${x1 + 140},${y1 - 50 - 10 * (i % 3)} ${x2 - 140},${y2 - 50 - 10 * (i % 3)} ${x2},${y2}`, fill: 'none', stroke: 'var(--accent)', 'stroke-width': 1.3, 'stroke-opacity': 0.7 }, g4);
+      const len = p.getTotalLength(); p.setAttribute('stroke-dasharray', len);
+      return { p, len, cell: cells4[0][gy * GX + gx] };
+    });
+    const note4 = el('text', { x: 480, y: 400 - 30, 'text-anchor': 'middle', 'font-size': 12.5, class: 't-strong', text: `frame t 토큰 ${GX * GY}개 중 ${matches.length}개를 key/value에서 제외 (모든 프레임이 같은 수만큼)` }, g4);
+
+    // ⑤ 24 blocks
+    const g5 = stage('blocks');
+    const BX = 48, BW = 30, BG = 6, BY = 236, BH = 46;
+    const qBar = el('rect', { x: 150, y: 96, width: 400, height: 22, rx: 5, fill: 'var(--accent)', 'fill-opacity': 0.85 }, g5);
+    void qBar;
+    el('text', { x: 140, y: 112, 'text-anchor': 'end', 'font-size': 12.5, class: 't-strong', text: 'query' }, g5);
+    el('text', { x: 560, y: 112, 'font-size': 12, text: '전체 S·P개 (그대로)' }, g5);
+    const kvBar = el('rect', { x: 150, y: 132, height: 22, rx: 5, fill: 'var(--s3)', 'fill-opacity': 0.85 }, g5);
+    el('text', { x: 140, y: 148, 'text-anchor': 'end', 'font-size': 12.5, class: 't-strong', text: 'key/value' }, g5);
+    const kvTxt = el('text', { x: 560, y: 148, 'font-size': 12 }, g5);
+    const feed = el('path', { fill: 'none', stroke: 'var(--accent)', 'stroke-width': 1.5, 'marker-end': 'url(#pa-arr)' }, g5);
+    const blocks5 = [];
+    for (let l = 0; l < 24; l++) {
+      const x = BX + l * (BW + BG), tap = TAPS.includes(l);
+      blocks5.push(el('rect', { x, y: BY, width: BW, height: BH, rx: 5, fill: 'var(--surface-2)', stroke: tap ? 'var(--accent)' : 'var(--border)', 'stroke-width': tap ? 2 : 1 }, g5));
+      el('text', { x: x + BW / 2, y: BY + BH + 16, 'text-anchor': 'middle', 'font-size': 10, class: tap ? 't-strong mono' : 'mono t-muted', text: l }, g5);
+    }
+    el('text', { x: BX, y: BY - 12, 'font-size': 12, text: '24개 블록 (테두리 = head가 읽는 tap 레이어)' }, g5);
+    const tray = TAPS.map((l, i) => {
+      const x = 300 + i * 100;
+      const r = el('rect', { x, y: 330, width: 80, height: 34, rx: 6, fill: 'var(--surface-2)', stroke: 'var(--border)' }, g5);
+      const t = el('text', { x: x + 40, y: 352, 'text-anchor': 'middle', 'font-size': 12, class: 'mono', text: `Z${l}` }, g5);
+      return { r, t, l };
+    });
+    el('text', { x: 290, y: 352, 'text-anchor': 'end', 'font-size': 12, text: '저장 (M1): 4개만 →' }, g5);
+    const drop = el('rect', { width: 22, height: 14, rx: 3, fill: 'var(--accent)' }, g5);
+
+    // ⑥ outputs
+    const g6 = stage('out');
+    const O = [[110, 110], [390, 110], [670, 110]], OW = 220, OH = 170;
+    const outs = O.map(([x, y]) => el('g', {}, g6));
+    // depth
+    const dg = 'pa-dg';
+    const lg = el('linearGradient', { id: dg, x1: 0, y1: 0, x2: 0, y2: 1 }, defs);
+    el('stop', { offset: '0', 'stop-color': '#cde2fb' }, lg); el('stop', { offset: '1', 'stop-color': '#184f95' }, lg);
+    el('rect', { x: O[0][0], y: O[0][1], width: OW, height: OH, rx: 6, fill: `url(#${dg})` }, outs[0]);
+    el('rect', { x: O[0][0] + 30, y: O[0][1] + 40, width: OW * 0.75, height: OH * 0.45, fill: '#3987e5' }, outs[0]);
+    el('circle', { cx: O[0][0] + OW * 0.62, cy: O[0][1] + OH * 0.76, r: 18, fill: '#104281' }, outs[0]);
+    label(outs[0], O[0][0] + OW / 2, O[0][1] + OH + 24, 'Depth map', { class: 't-strong' });
+    // point cloud
+    el('rect', { x: O[1][0], y: O[1][1], width: OW, height: OH, rx: 6, fill: 'var(--surface-2)' }, outs[1]);
+    for (let i = 0; i < 260; i++) {
+      const u = hash(i, 1), v = hash(i, 2), z = hash(i, 3);
+      const x = O[1][0] + 20 + (u * 0.8 + v * 0.2) * (OW - 40), y = O[1][1] + 30 + (v * 0.7 + z * 0.15) * (OH - 50);
+      el('circle', { cx: x, cy: y, r: 1.8, fill: v < 0.25 ? 'var(--tok-a)' : v > 0.8 ? 'var(--s3)' : 'var(--s2)', 'fill-opacity': 0.8 }, outs[1]);
+    }
+    label(outs[1], O[1][0] + OW / 2, O[1][1] + OH + 24, 'Point map (3D 점)', { class: 't-strong' });
+    // cameras
+    el('rect', { x: O[2][0], y: O[2][1], width: OW, height: OH, rx: 6, fill: 'var(--surface-2)' }, outs[2]);
+    el('path', { d: `M${O[2][0] + 30},${O[2][1] + 130} C ${O[2][0] + 70},${O[2][1] + 70} ${O[2][0] + 130},${O[2][1] + 50} ${O[2][0] + 195},${O[2][1] + 60}`, fill: 'none', stroke: 'var(--accent)', 'stroke-dasharray': '4 4' }, outs[2]);
+    [[38, 122, -60], [85, 82, -35], [140, 62, -15], [190, 60, 5]].forEach(([x, y, a]) => frustum(outs[2], O[2][0] + x, O[2][1] + y, a));
+    label(outs[2], O[2][0] + OW / 2, O[2][1] + OH + 24, 'Camera pose', { class: 't-strong' });
+    const out6 = el('text', { x: 480, y: 360, 'text-anchor': 'middle', 'font-size': 12.5, class: 't-muted', text: '원래 VGGT와 같은 형식 · 같은 해상도 · 추가 학습 없음' }, g6);
+    void out6;
+
+    // progress chips
+    const chips = el('g', {}, svg);
+    const chipEls = STAGES.map((st, i) => {
+      const x = 30 + i * 152;
+      const g = el('g', { style: 'cursor:pointer' }, chips);
+      const r = el('rect', { x, y: 404, width: 140, height: 30, rx: 15, stroke: 'var(--border)' }, g);
+      const t = el('text', { x: x + 70, y: 424, 'text-anchor': 'middle', 'font-size': 12.5, text: st.name }, g);
+      const prog = el('rect', { x, y: 436, height: 3, rx: 1.5, fill: 'var(--accent)' }, g);
+      g.addEventListener('click', () => jump(st.t0 + 0.01));
+      return { r, t, prog };
+    });
+
+    const stageGroups = [g1, g2, g3, g4, g5, g6];
+    function draw(t) {
+      const k = STAGES.findIndex((st) => t >= st.t0 && t < st.t1);
+      const st = STAGES[Math.max(0, k)];
+      title.textContent = st.title; sub.textContent = st.sub;
+      stageGroups.forEach((g, i) => {
+        const S = STAGES[i];
+        const o = Math.min(phase(t, S.t0, S.t0 + 0.4), 1 - phase(t, S.t1 - 0.35, S.t1));
+        g.setAttribute('opacity', o.toFixed(3)); g.style.display = o > 0.001 ? '' : 'none';
+      });
+      chipEls.forEach((c, i) => {
+        const S = STAGES[i], on = i === k;
+        c.r.setAttribute('fill', on ? 'var(--text)' : 'var(--surface)');
+        c.t.style.fill = on ? 'var(--bg)' : 'var(--text-2)';
+        c.prog.setAttribute('width', 140 * clamp((t - S.t0) / (S.t1 - S.t0), 0, 1));
+      });
+      // ①
+      in1.forEach((g, i) => { const p = phase(t, 0.2 + i * 0.25, 0.9 + i * 0.25); at(g, 50 + i * 230 - 30 * (1 - p), 140); g.setAttribute('opacity', p); });
+      pan.setAttribute('opacity', phase(t, 1.6, 2.2));
+      // ②
+      in2.forEach((g, i) => {
+        const p = phase(t, 3.6 + i * 0.12, 4.6 + i * 0.12);
+        const x0 = 40 + (i % 2) * 120, y0 = 120 + Math.floor(i / 2) * 110;
+        at(g, x0 + (440 - x0) * p, y0 + (170 - y0) * p, 0.55 - 0.35 * p);
+        g.setAttribute('opacity', 1 - phase(t, 4.5 + i * 0.12, 4.8 + i * 0.12));
+      });
+      bar2.setAttribute('width', 128 * phase(t, 4.6, 5.4));
+      traj.setAttribute('opacity', phase(t, 5.4, 5.8));
+      cams.forEach((c, i) => c.setAttribute('opacity', phase(t, 5.4 + i * 0.2, 5.8 + i * 0.2)));
+      // ③
+      const pulse = 7 + 3 * Math.abs(Math.sin(t * 4));
+      pt.setAttribute('r', pulse); ptIn.setAttribute('r', pulse);
+      ray.setAttribute('opacity', phase(t, 7.6, 8.0) * (1 - phase(t, 9.4, 9.8)));
+      line.setAttribute('stroke-dashoffset', lineLen * (1 - phase(t, 7.9, 8.8)));
+      band.setAttribute('fill-opacity', 0.4 * phase(t, 8.6, 9.2));
+      wrong.setAttribute('opacity', phase(t, 9.3, 9.7));
+      right.setAttribute('opacity', phase(t, 9.8, 10.2));
+      // ④
+      arcs4.forEach((a, i) => {
+        a.p.setAttribute('stroke-dashoffset', a.len * (1 - phase(t, 11.8 + i * 0.07, 12.8 + i * 0.07)));
+        a.p.setAttribute('opacity', 1 - phase(t, 14.2, 14.8));
+        const d = phase(t, 13.6, 14.3);
+        a.cell.setAttribute('fill-opacity', 0.85 * (1 - 0.8 * d)); a.cell.setAttribute('stroke-width', 1.4 * d);
+      });
+      note4.setAttribute('opacity', phase(t, 13.8, 14.3));
+      // ⑤
+      const bl = clamp(Math.floor((t - 16.2) / 0.2), -1, 23);
+      blocks5.forEach((b, l) => {
+        const done = l < bl, cur = l === bl;
+        b.setAttribute('fill', cur ? 'var(--accent)' : done ? 'var(--accent-soft)' : 'var(--surface-2)');
+      });
+      const full = bl >= 0 && (bl < 5 || TAPS.includes(bl));
+      const kvTarget = full ? 400 : 280;
+      kvBar.setAttribute('width', bl < 0 ? 280 : kvTarget);
+      kvTxt.textContent = bl < 0 ? '줄어든 S·(P−n)개' : full ? '이 층은 full attention (초기층·tap)' : '줄어든 S·(P−n)개';
+      if (bl >= 0) {
+        const bx = BX + bl * (BW + BG) + BW / 2;
+        feed.setAttribute('d', `M350,160 C 350,200 ${bx},190 ${bx},${BY - 4}`);
+        feed.setAttribute('opacity', 1);
+      } else feed.setAttribute('opacity', 0);
+      tray.forEach(({ r, l }) => r.setAttribute('fill', bl >= l ? 'var(--accent-soft)' : 'var(--surface-2)'));
+      // dropping copy at tap layers
+      const tapNow = TAPS.find((l) => bl === l);
+      if (tapNow !== undefined) {
+        const f = clamp(((t - 16.2) / 0.2) - bl, 0, 1);
+        const sx = BX + tapNow * (BW + BG) + 4, sy = BY + BH, i = TAPS.indexOf(tapNow);
+        const tx = 300 + i * 100 + 29, ty = 340;
+        drop.setAttribute('x', sx + (tx - sx) * f); drop.setAttribute('y', sy + (ty - sy) * f); drop.setAttribute('opacity', 1);
+      } else drop.setAttribute('opacity', 0);
+      // ⑥
+      outs.forEach((g, i) => g.setAttribute('opacity', phase(t, 22 + i * 0.4, 22.6 + i * 0.4)));
+    }
+
+    let start = performance.now(), paused = reduceMotion, pausedAt = 23, raf = null, visible = false;
+    const btn = $('#pipe-toggle');
+    const loop = (now) => { draw(((now - start) / 1000) % T); raf = requestAnimationFrame(loop); };
+    const play = () => { start = performance.now() - pausedAt * 1000; if (!raf) raf = requestAnimationFrame(loop); };
+    const stop = () => { if (raf) cancelAnimationFrame(raf); raf = null; pausedAt = ((performance.now() - start) / 1000) % T; };
+    function jump(t) { pausedAt = t; start = performance.now() - t * 1000; draw(t); }
+    btn.addEventListener('click', () => { paused = !paused; btn.textContent = paused ? '재생' : '일시정지'; if (paused) stop(); else if (visible) play(); });
+    new IntersectionObserver((es) => es.forEach((e) => {
+      visible = e.isIntersecting;
+      if (visible && !paused) play(); else if (!visible && raf) stop();
+    })).observe(svg);
+    const freeze = new URLSearchParams(location.search).get('pipe'); // ?pipe=<seconds> freezes a frame (for screenshots)
+    if (freeze !== null) { paused = true; pausedAt = +freeze; }
+    if (paused) btn.textContent = '재생';
+    if (!paused) pausedAt = 0;
+    draw(paused ? pausedAt : 0);
+  }
+
   /* ---------------- Hero animation ---------------- */
   function hero() {
     const svg = $('#hero-anim'); if (!svg) return;
@@ -941,7 +1222,7 @@
 
   function init() {
     renderMath();
-    hero(); explorer(); pipeline(); asym(); mergeUnmergeAnim(); resolutionDemo(); layers(); epipolar(); results(); runtime(); attentionViewer(); schedule();
+    pipelineAnim(); hero(); explorer(); pipeline(); asym(); mergeUnmergeAnim(); resolutionDemo(); layers(); epipolar(); results(); runtime(); attentionViewer(); schedule();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();

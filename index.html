@@ -20,17 +20,29 @@
   </div>
 </header>
 
+<section class="wrap">
+  <div class="tldr">
+    <div class="tldr-item"><div class="tldr-k">문제</div>
+      <p>VGGT는 사진 여러 장을 한 번에 보고 3D를 복원합니다. 그런데 사진 수가 늘면 메모리가 <b>제곱으로</b> 늘어서, 16 GB GPU에서는 30장 정도가 한계입니다.</p></div>
+    <div class="tldr-item"><div class="tldr-k">아이디어</div>
+      <p>영상에서 이웃한 프레임은 거의 같은 장면입니다. 겹치는 부분은 <b>한 번만 참고</b>하도록 줄이면 되지 않을까요?</p></div>
+    <div class="tldr-item"><div class="tldr-k">결과</div>
+      <p>추가 학습 없이 <b>7.5배 빠르고 메모리를 2.1배 적게</b> 쓰면서, 정확도는 원래 VGGT와 같은 수준을 유지했습니다.</p></div>
+  </div>
+  <nav class="toc" aria-label="목차">
+    <a href="#abstract">개요</a><a href="#idea">아이디어</a><a href="#problem">메모리의 벽</a><a href="#method">방법</a><a href="#results">결과</a><a href="#followup">후속 실험</a><a href="#limits">한계</a>
+  </nav>
+</section>
+
 <main>
 
   <!-- ===== Teaser animation ===== -->
   <section class="wrap teaser">
     <figure class="card">
-      <svg id="hero-anim" viewBox="0 0 960 380" role="img" aria-label="애니메이션: 이웃 프레임 사이에서 토큰을 짝지어 중복 토큰을 key/value에서 제거하고, attention 행렬이 N×N에서 N×N_red로 줄어드는 과정"></svg>
+      <svg id="pipe-anim" viewBox="0 0 960 450" role="img" aria-label="전체 파이프라인 애니메이션: 입력 프레임, 저해상도 pose 추정, epipolar band, 토큰 매칭, 24개 블록의 KV-asymmetric attention, 출력"></svg>
       <figcaption>
-        <button id="hero-toggle" class="chip" type="button">일시정지</button>
-        <span>인접한 영상 프레임은 거의 똑같습니다. TTM은 frame <i>t</i>의 토큰을
-        frame <i>t+1</i>의 짝과 매칭해 중복본을 <b>key/value</b>에서만 뺍니다. 모든 토큰은 <b>query</b>로 남기 때문에
-        attention 행렬은 <i>N×N</i>에서 <i>N×N<sub>red</sub></i>로 줄어들고, unmerge 단계가 필요 없습니다.</span>
+        <button id="pipe-toggle" class="chip" type="button">일시정지</button>
+        <span>TTM 전체 흐름입니다. 아래 단계 이름을 누르면 해당 단계로 이동합니다.</span>
       </figcaption>
     </figure>
   </section>
@@ -57,6 +69,19 @@
       <li><span class="tag">M5</span><b>Epipolar-Constrained Merge</b>: 같은 모델을 저해상도로 한 번 더 돌려 얻은 카메라 pose로 epipolar 거리를 계산하고, epipolar line 근처의 패치만 merge 후보로 남깁니다.</li>
     </ul>
     <p>모든 구성 요소는 VGGT의 가중치를 그대로(frozen) 재사용하므로 fine-tuning이 필요 없고, FlashAttention 같은 효율적인 attention 커널과 함께 쓸 수 있습니다.</p>
+    <details class="glossary">
+      <summary>처음 보는 분을 위한 용어 정리</summary>
+      <dl>
+        <dt>토큰</dt><dd>이미지를 14×14 픽셀 조각(패치)으로 잘라 각각을 벡터로 바꾼 것입니다. 518 px 이미지 한 장은 토큰 1369개가 됩니다.</dd>
+        <dt>attention</dt><dd>각 토큰이 다른 토큰들을 훑어보고 필요한 정보를 모아 오는 연산입니다. 훑어볼 대상이 많을수록 비용이 커집니다.</dd>
+        <dt>query / key / value</dt><dd>attention에서 정보를 구하는 쪽이 query, 참고자료가 key와 value입니다. key로 얼마나 관련 있는지 판단하고, value에서 내용을 가져옵니다. 출력은 query 하나당 하나씩 나옵니다.</dd>
+        <dt>global attention</dt><dd>모든 프레임의 토큰을 한꺼번에 attention하는 단계입니다. 프레임 S장, 장당 토큰 P개면 N = S·P개가 서로를 보므로 비용이 N²에 비례합니다.</dd>
+        <dt>merge / unmerge</dt><dd>비슷한 토큰을 하나로 합치는 것 / 합친 토큰을 원래 자리로 다시 펼치는 것입니다.</dd>
+        <dt>pose</dt><dd>각 프레임을 찍은 카메라의 위치와 방향입니다.</dd>
+        <dt>epipolar line</dt><dd>두 카메라의 상대 위치를 알 때, 한 사진 속 점이 다른 사진에서 놓일 수 있는 직선입니다. 같은 3D 점의 짝은 반드시 이 선 위에 있습니다.</dd>
+        <dt>DPT head</dt><dd>VGGT에서 depth와 3D point map을 출력하는 부분입니다. 24개 레이어 중 4개(4, 11, 17, 23)의 특징만 읽습니다.</dd>
+      </dl>
+    </details>
   </section>
 
   <!-- ===== Idea ===== -->
@@ -85,6 +110,7 @@
   <!-- ===== Problem ===== -->
   <section class="wrap prose" id="problem">
     <h2>메모리의 벽</h2>
+    <aside class="easy"><b>쉽게 말하면</b>참석자 모두가 서로 한 번씩 대화해야 하는 회의를 떠올려 보세요. 사람이 2배가 되면 대화 횟수는 4배가 됩니다. global attention이 바로 이 구조라, 프레임이 조금만 늘어도 메모리가 금방 바닥납니다.</aside>
     <p>VGGT는 <i>frame attention</i>(한 이미지 안의 토큰끼리)과 <i>global attention</i>(<span class="m">S</span>개 프레임의 모든 토큰
       <span class="m">N = S\cdot P</span>개 전체)을 번갈아 수행합니다. global attention 덕분에 여러 시점의 예측이 서로 일관되지만,
       score 행렬 크기가 <span class="m">N\times N</span>이라 프레임 수가 2배가 되면 비용은 4배가 됩니다.
@@ -125,23 +151,36 @@
   <!-- Bipartite merging -->
   <section class="wrap prose">
     <h3>프레임 간 bipartite token merging</h3>
+    <aside class="easy"><b>쉽게 말하면</b>두 사진을 나란히 놓고, 앞 사진의 조각마다 다음 사진에서 가장 닮은 조각을 찾습니다. 그중 가장 확실하게 닮은 n쌍만 골라 "같은 내용"으로 보고 중복을 줄입니다.</aside>
     <p>각 프레임 <span class="m">t</span>는 바로 다음 프레임 <span class="m">t{+}1</span>을 reference로 삼습니다(마지막 프레임은 <span class="m">t{-}1</span>).
       VGGT 자체의 frozen key projection으로 패치 토큰을 투영하고 L2 정규화한 뒤, frame <span class="m">t</span>의 짝수 인덱스 source 토큰마다
       frame <span class="m">t{+}1</span>에서 가장 비슷한 토큰을 찾습니다.</p>
-    <div class="eq" data-tex="j^\star(i) = \arg\max_j \,\langle \hat K_t[i],\, \hat K_{t+1}[j] \rangle, \qquad n = \lfloor P_{\text{patch}}\cdot r(\Delta t)\rfloor,\quad r(\Delta t) = r_{\max}\, e^{-\lambda \Delta t_{\text{norm}}}"></div>
+    <details class="math"><summary>수식으로 보기</summary><div class="eq" data-tex="j^\star(i) = \arg\max_j \,\langle \hat K_t[i],\, \hat K_{t+1}[j] \rangle, \qquad n = \lfloor P_{\text{patch}}\cdot r(\Delta t)\rfloor,\quad r(\Delta t) = r_{\max}\, e^{-\lambda \Delta t_{\text{norm}}}"></div></details>
     <p>유사도가 가장 높은 <span class="m">n</span>개의 source를 merge합니다. 유사도를 attention 자체의 key 공간에서 계산하므로 별도 네트워크가 필요 없습니다.
       merge 방식은 <b>hard-kept</b>를 씁니다. 두 토큰을 평균내는 soft 방식은 frame <span class="m">t{+}1</span>의 내용이 frame <span class="m">t</span>의 자리로
       새어 들어가 depth가 흐려지기 때문입니다. 모든 프레임이 같은 개수 <span class="m">n</span>을 빼서 merge 후에도 텐서 모양이 깔끔하게 유지되고, 매칭 비용은 프레임 수에 선형입니다. 같은 merge 인덱스를 여러 레이어에서 재사용(index caching)할 수도 있습니다.</p>
+  </section>
+  <section class="wrap">
+    <figure class="card">
+      <svg id="hero-anim" viewBox="0 0 960 380" role="img" aria-label="애니메이션: 이웃 프레임 사이에서 토큰을 짝지어 중복 토큰을 key/value에서 제거하고, attention 행렬이 N×N에서 N×N_red로 줄어드는 과정"></svg>
+      <figcaption>
+        <button id="hero-toggle" class="chip" type="button">일시정지</button>
+        <span>인접한 영상 프레임은 거의 똑같습니다. TTM은 frame <i>t</i>의 토큰을
+        frame <i>t+1</i>의 짝과 매칭해 중복본을 <b>key/value</b>에서만 뺍니다. 모든 토큰은 <b>query</b>로 남기 때문에
+        attention 행렬은 <i>N×N</i>에서 <i>N×N<sub>red</sub></i>로 줄어들고, unmerge 단계가 필요 없습니다.</span>
+      </figcaption>
+    </figure>
   </section>
 
   <!-- M2 -->
   <section class="wrap prose" id="m2">
     <h3><span class="tag">M2</span> KV-Asymmetric Merge: unmerge가 필요 없는 attention</h3>
+    <aside class="easy"><b>쉽게 말하면</b>attention을 질문자(query)가 참고자료(key/value)를 찾아보는 과정이라고 생각해 보세요. TTM은 참고자료 중 중복본만 치우고 질문자는 한 명도 빼지 않습니다. 그래서 답(출력)이 원래 인원수만큼 그대로 나옵니다. 기존 방식은 질문자까지 둘을 하나로 합쳤다가, 답을 받은 뒤 같은 답을 두 사람에게 복사해 줍니다. 그래서 두 자리의 결과가 똑같아지고 세부가 사라집니다.</aside>
     <p>일반적인 방식은 <i>merge → attention → unmerge</i>입니다. 줄어든 시퀀스를 attention 뒤에 원래 위치로 다시 뿌려야 하는데, 이 과정에서
       frame <span class="m">t{+}1</span>의 특징이 frame <span class="m">t</span>의 위치에 섞여 들어갑니다.
       그런데 제곱 비용은 query 길이가 아니라 <b>key/value 길이</b>에서 생깁니다. query 하나는 key를 몇 개 보든 출력을 정확히 하나 만듭니다.
       그래서 query는 전체 시퀀스에서, key/value는 merge된 시퀀스에서 계산합니다.</p>
-    <div class="eq" data-tex="Q = X W_Q,\quad K = X_{\text{red}} W_K,\quad V = X_{\text{red}} W_V,\qquad O = \operatorname{softmax}\!\Big(\tfrac{QK^\top}{\sqrt d}\Big)V \in \mathbb{R}^{SP\times C}"></div>
+    <details class="math"><summary>수식으로 보기</summary><div class="eq" data-tex="Q = X W_Q,\quad K = X_{\text{red}} W_K,\quad V = X_{\text{red}} W_V,\qquad O = \operatorname{softmax}\!\Big(\tfrac{QK^\top}{\sqrt d}\Big)V \in \mathbb{R}^{SP\times C}"></div></details>
     <p>출력이 처음부터 원래 토큰마다 한 행씩 있으므로, head는 기대하던 형태 그대로 입력을 받습니다.
       비용은 <span class="m">O((SP)^2)</span>에서 <span class="m">O(SP\cdot N_{\text{red}})</span>로 줄어듭니다.
       구현에서는 <span class="m">W_K</span>와 <span class="m">W_V</span>를 하나의 행렬로 합쳐 <span class="m">X_{\text{red}}</span>에 한 번만 곱하고,
@@ -205,6 +244,7 @@
   <!-- M1 -->
   <section class="wrap prose" id="m1">
     <h3><span class="tag">M1</span> Layer-Selective Storage</h3>
+    <aside class="easy"><b>쉽게 말하면</b>24개 층의 중간 결과를 모두 보관하지만, 실제로 꺼내 쓰는 건 4개뿐입니다. 쓰지 않는 20개는 처음부터 저장하지 않습니다.</aside>
     <p>VGGT는 head를 위해 24개 블록의 출력을 모두 저장하지만, DPT depth/point head는
       <span class="m">\mathcal T = \{4, 11, 17, 23\}</span>만 읽고 camera head는 마지막 레이어만 읽습니다.
       나머지 20개를 <code>None</code>으로 저장하는 한 줄 수정만으로 <span class="m">S=20</span>에서 약 870 MB가 절약되고,
@@ -219,10 +259,11 @@
   <!-- M5 -->
   <section class="wrap prose" id="m5">
     <h3><span class="tag">M5</span> Epipolar-Constrained Merge</h3>
+    <aside class="easy"><b>쉽게 말하면</b>달리는 차에서 찍은 연속 사진을 생각해 보세요. 카메라가 어느 쪽으로 움직였는지 알면, 한 점이 다음 사진에서 나타날 수 있는 위치가 한 줄로 좁혀집니다. 그 줄 위에서만 짝을 찾으면 생김새가 비슷한 엉뚱한 창문과 헷갈리지 않습니다. 카메라 움직임은 같은 모델을 아주 낮은 해상도로 한 번 먼저 돌려서 빠르게 얻습니다.</aside>
     <p>겉모양만으로는 짝이 모호합니다. 똑같은 창문이 늘어선 건물 벽면에는 비슷해 보이는 key가 수없이 많습니다. 하지만 기하는 모호하지 않습니다.
       어떤 패치의 진짜 짝은 다음 프레임에서 반드시 그 패치의 <b>epipolar line</b> 위에 있어야 합니다. M5는 매칭 후보를 이 직선 주변의 band 안으로 제한하고,
       band 안에서만 겉모양(cosine 유사도)으로 짝을 고릅니다. 기하가 검색 범위를 1차원으로 좁히고, 겉모양이 그 위에서 짝을 가려내는 구조입니다.</p>
-    <div class="eq" data-tex="j^\star(i) = \arg\max_{j\,:\,d_{\text{epi}}(i,j)\,\le\,\tau} \;\langle \hat K_t[i],\, \hat K_{t+1}[j] \rangle,\qquad \tau = 0.05\,W,\qquad F_{t,t+1} = K_{t+1}^{-\top}[t_{\text{rel}}]_\times R_{\text{rel}} K_t^{-1}"></div>
+    <details class="math"><summary>수식으로 보기</summary><div class="eq" data-tex="j^\star(i) = \arg\max_{j\,:\,d_{\text{epi}}(i,j)\,\le\,\tau} \;\langle \hat K_t[i],\, \hat K_{t+1}[j] \rangle,\qquad \tau = 0.05\,W,\qquad F_{t,t+1} = K_{t+1}^{-\top}[t_{\text{rel}}]_\times R_{\text{rel}} K_t^{-1}"></div></details>
     <p>후보를 제한해도 merge 개수 <span class="m">n</span>은 그대로라서 메모리와 연산량은 M1+M2와 같고, 어떤 패치를 합칠지만 더 정확해집니다.
       ablation으로 거리에 따라 유사도를 연속적으로 줄이는 soft gate <span class="m">s_{ij}\cdot\exp(-d_{\text{epi}}^2/\sigma^2)</span>도 구현해 비교했습니다.</p>
     <p>pose는 VGGT 자신에게서 얻습니다. 224 px로 돌리는 <b>Pass 0</b>(M1+M2를 적용한 TTM)은 본 추론의 약 1/10 시간이 걸리고,
@@ -249,6 +290,7 @@
   <!-- Results -->
   <section class="wrap prose" id="results">
     <h2>결과</h2>
+    <aside class="easy"><b>쉽게 말하면</b>파란 막대(TTM)는 정확도 탭에서 주황 막대(원래 VGGT)와 거의 같은 높이입니다. 시간과 메모리 탭으로 바꾸면 파란 막대가 훨씬 낮습니다. 즉 정확도는 그대로 두고 비용만 크게 줄였습니다.</aside>
     <p>Tanks and Temples training set 5개 장면, H100 1장, BF16 기준입니다. 장면별 threshold의 ×5 / ×10에서의 복원 F1,
       pose AUC@30°, forward pass 시간, 최대 GPU 메모리를 비교했습니다.</p>
   </section>
@@ -278,6 +320,7 @@
   <!-- Follow-up -->
   <section class="wrap prose" id="followup">
     <h2>후속 실험: 레이어마다 merge 예산을 다르게 줘야 할까?</h2>
+    <aside class="easy"><b>쉽게 말하면</b>레이어마다 "얼마나 압축해도 괜찮은지"가 다를 것 같아서, 민감해 보이는 중간 레이어는 덜 압축하는 실험을 했습니다. 결과적으로 정확도 차이는 거의 없었습니다.</aside>
     <p>중간 깊이(L11–L15)의 global block에서는 attention이 유독 <i>heterogeneous</i>합니다. query마다 서로 다른 소수의 key에 집중합니다.
       이를 attention map 한 번의 forward로 측정하는 <b>heterogeneity probe</b>(query별 coverage <span class="m">c_\pi</span>)를 만들고,
       이 구간에서 merge를 줄이는 레이어별 배율 <span class="m">r^{(\ell)} = \alpha_\ell\, r_{\max}</span>을 실험했습니다.</p>
