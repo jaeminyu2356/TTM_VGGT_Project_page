@@ -59,6 +59,26 @@
     <p>모든 구성 요소는 VGGT의 가중치를 그대로(frozen) 재사용하므로 fine-tuning이 필요 없고, FlashAttention 같은 효율적인 attention 커널과 함께 쓸 수 있습니다.</p>
   </section>
 
+  <!-- ===== Idea ===== -->
+  <section class="wrap prose" id="idea">
+    <h2>아이디어</h2>
+    <p>VGGT는 원래 이미지 사이의 시간 정보 없이도 동작하는 모델입니다. 입력 순서를 섞어도 되는 이미지 묶음으로 취급하죠.
+      하지만 실제 입력이 <b>영상</b>이라면 상황이 다릅니다. 이웃한 프레임은 거의 같은 장면을 보고 있고, 그만큼 토큰도 중복됩니다.
+      이 중복을 찾아 압축하면, 품질은 유지하면서 메모리와 추론 시간을 줄일 수 있지 않을까요?</p>
+  </section>
+  <section class="wrap">
+    <div class="idea-flow">
+      <div class="idea-step"><div class="idea-num">1</div><div class="idea-title">관찰</div>
+        <p>영상은 이미지 시퀀스입니다. 이웃한 프레임끼리는 시차만 조금 있을 뿐 대부분의 패치가 거의 같습니다.</p></div>
+      <div class="idea-step"><div class="idea-num">2</div><div class="idea-title">SLAM에서 빌린 개념</div>
+        <p>같은 3D 점은 다음 프레임의 <b>epipolar line</b> 위에 찍힙니다. 이 제약으로 비슷하게 생긴 엉뚱한 패치를 걸러내고 진짜 짝만 압축합니다.</p></div>
+      <div class="idea-step"><div class="idea-num">3</div><div class="idea-title">pose 문제 해결</div>
+        <p>epipolar line을 그리려면 pose가 필요합니다. 아주 낮은 해상도로 VGGT를 한 번 먼저 돌려 대략적인 pose를 얻고, 이 정보로 이웃 프레임 패치 사이의 대응을 알려줍니다.</p></div>
+      <div class="idea-step"><div class="idea-num">4</div><div class="idea-title">압축</div>
+        <p>찾은 짝 패치를 merge해 key/value를 줄입니다. query는 그대로 두므로 출력 해상도는 유지되고, 메모리와 추론 시간만 줄어듭니다.</p></div>
+    </div>
+  </section>
+
   <!-- ===== Problem ===== -->
   <section class="wrap prose" id="problem">
     <h2>메모리의 벽</h2>
@@ -129,6 +149,35 @@
       <svg id="asym" viewBox="0 0 960 360" role="img" aria-label="merge-unmerge 방식과 KV-asymmetric 방식 비교"></svg>
       <figcaption>위: 대칭적인 merge–unmerge 방식은 scatter 단계가 필요하고, 이때 제거됐던 위치가 오염됩니다. 아래: TTM은 query를 모두 유지하고 K/V만 줄이므로 출력이 구조적으로 원래 길이입니다.</figcaption>
     </figure>
+  </section>
+
+  <section class="wrap prose">
+    <h3>해상도가 유지된다는 것</h3>
+    <p>merge→unmerge 방식에서는 제거된 패치가 이웃 프레임 짝의 특징을 복사해 받습니다. 이웃 프레임은 시차만큼 어긋나 있으므로,
+      merge할수록 그 패치의 세부 정보가 뭉개지고 경계가 어긋납니다. KV-asymmetric 방식에서는 모든 패치가 자기 query를 그대로 가지고
+      줄어든 K/V에서 문맥만 가져오기 때문에, 패치마다 고유한 출력이 나오고 공간 해상도가 그대로 유지됩니다.</p>
+  </section>
+  <section class="wrap">
+    <figure class="card">
+      <svg id="mu-anim" viewBox="0 0 960 540" role="img" aria-label="애니메이션: 기존 merge-unmerge 방식과 TTM KV-asymmetric 방식의 토큰 흐름 비교"></svg>
+      <figcaption>
+        <button id="mu-toggle" class="chip" type="button">일시정지</button>
+        <span>같은 토큰 48개, 같은 merge 쌍 12개로 두 방식을 비교합니다. 두 방식 모두 attention에 들어가는 K/V 길이는 36으로 같지만,
+        기존 방식은 합쳐진 값을 unmerge로 두 자리에 복사해 넣으므로 출력에서 그만큼 해상도가 떨어집니다. TTM은 query 48개가 그대로 남아 패치마다 고유한 출력을 받습니다.</span>
+      </figcaption>
+    </figure>
+  </section>
+  <section class="wrap">
+    <div class="card resdemo">
+      <div class="controls">
+        <button id="res-play" class="chip" type="button">일시정지</button>
+        <label>merge 비율 <i>r</i> <output id="rr-out">0.00</output>
+          <input id="rr-in" type="range" min="0" max="0.5" step="0.01" value="0"></label>
+      </div>
+      <canvas id="res-canvas" aria-label="merge 비율에 따른 출력 해상도 비교 애니메이션"></canvas>
+      <p class="note">개념 시각화입니다. 합성 장면의 depth로 그렸으며 실제 모델 출력이 아닙니다. 빗금 친 패치는 frame <i>t</i>에서 K/V로부터 제거된 패치이고,
+        merge→unmerge 출력에서는 그 자리에 frame <i>t</i>와 <i>t+1</i>의 짝 패치를 섞은 값이 들어갑니다.</p>
+    </div>
   </section>
 
   <section class="wrap prose">

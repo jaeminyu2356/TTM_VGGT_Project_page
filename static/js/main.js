@@ -477,6 +477,281 @@
     render();
   }
 
+  /* ---------------- Shared synthetic scene (illustration only) ---------------- */
+  const SCENE_W = 280, SCENE_H = 210;
+  // depth in [0,1] (0 = near): floor, sphere, box, thin pole + bar
+  function sceneDepth(x, y) {
+    let d = 0.35 + 0.6 * (1 - y / SCENE_H);
+    const dx = x - 85, dy = y - 112, r2 = dx * dx + dy * dy;
+    if (r2 < 44 * 44) d = Math.min(d, 0.25 + 0.25 * Math.sqrt(r2) / 44);
+    if (x > 170 && x < 245 && y > 58 && y < 150) d = Math.min(d, 0.45 + 0.002 * (x - 170));
+    if (x > 140 && x < 145 && y > 30 && y < 175) d = Math.min(d, 0.3);
+    if (y > 40 && y < 44 && x > 120 && x < 165) d = Math.min(d, 0.3);
+    return d;
+  }
+  // sequential blue ramp: near = dark, far = light
+  const RAMP = ['#0d366b', '#184f95', '#256abf', '#3987e5', '#6da7ec', '#9ec5f4', '#cde2fb'].map((h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)));
+  function depthRGB(d) {
+    const t = clamp(d, 0, 1) * (RAMP.length - 1), i = Math.min(RAMP.length - 2, Math.floor(t)), f = t - i;
+    return RAMP[i].map((c, k) => c + (RAMP[i + 1][k] - c) * f);
+  }
+  const rgbStr = (c) => `rgb(${c.map(Math.round).join(',')})`;
+  const mixRGB = (a, b, f) => a.map((v, k) => v + (b[k] - v) * f);
+
+  /* ---------------- Merge-unmerge vs KV-asymmetric (step animation) ---------------- */
+  function mergeUnmergeAnim() {
+    const svg = $('#mu-anim'); if (!svg) return;
+    const GX = 8, GY = 6, CS = 22, CG = 2, STEP = CS + CG, GW = GX * STEP - CG;
+    const COLX = [40, 384, 728], ROWY = [112, 352];
+    // token colour = mean depth of its 35x35 region
+    const PW = SCENE_W / GX, PH = SCENE_H / GY;
+    const cells = [];
+    for (let gy = 0; gy < GY; gy++) for (let gx = 0; gx < GX; gx++) {
+      let m = 0, k = 0;
+      for (let y = gy * PH; y < (gy + 1) * PH; y += 3) for (let x = gx * PW; x < (gx + 1) * PW; x += 3) { m += sceneDepth(x, y); k++; }
+      cells.push({ gx, gy, d: m / k });
+    }
+    const idx = (gx, gy) => gy * GX + gx;
+    // merge pairs: even column (src) -> right neighbour (dst); keep the 12 most similar pairs
+    const pairs = [];
+    for (let gy = 0; gy < GY; gy++) for (let gx = 0; gx < GX; gx += 2) {
+      const a = cells[idx(gx, gy)], b = cells[idx(gx + 1, gy)];
+      pairs.push({ src: idx(gx, gy), dst: idx(gx + 1, gy), sim: -Math.abs(a.d - b.d) + 1e-4 * hash(gx, gy) });
+    }
+    pairs.sort((a, b) => b.sim - a.sim);
+    const MERGED = pairs.slice(0, 12);
+    const srcOf = new Map(MERGED.map((p) => [p.src, p])), dstOf = new Map(MERGED.map((p) => [p.dst, p]));
+    const avg = (p) => depthRGB((cells[p.src].d + cells[p.dst].d) / 2);
+    const own = (i) => depthRGB(cells[i].d);
+    const pos = (col, row, i) => [COLX[col] + (i % GX) * STEP, ROWY[row] + Math.floor(i / GX) * STEP];
+
+    // labels
+    const step = el('text', { x: 480, y: 26, 'text-anchor': 'middle', class: 't-strong', 'font-size': 15 }, svg);
+    const sub = el('text', { x: 480, y: 46, 'text-anchor': 'middle', 'font-size': 12.5 }, svg);
+    [0, 1].forEach((row) => [['입력 토큰 (frame t)', 0], ['출력 토큰', 2]].forEach(([t, c]) =>
+      el('text', { x: COLX[c] + GW / 2, y: ROWY[row] - 12, 'text-anchor': 'middle', 'font-size': 12, text: t }, svg)));
+    el('text', { x: 16, y: ROWY[0] - 34, class: 't-strong', 'font-size': 13.5, text: '기존 방식 (LiteVGGT 등): merge → attention → unmerge' }, svg);
+    el('text', { x: 16, y: ROWY[1] - 34, class: 't-strong', 'font-size': 13.5, text: 'TTM: KV-asymmetric (query 유지, unmerge 없음)' }, svg);
+    [0, 1].forEach((row) => {
+      el('text', { x: COLX[1] + GW / 2, y: ROWY[row] - 12, 'text-anchor': 'middle', 'font-size': 12, text: row === 0 ? 'attention 입력 (merge된 토큰)' : 'attention에 들어가는 K/V' }, svg);
+      [0, 1].forEach((c) => el('path', { d: `M${COLX[c] + GW + 14},${ROWY[row] + 70} H${COLX[c + 1] - 14}`, stroke: 'var(--border)', 'stroke-width': 1.5, 'marker-end': 'url(#mu-arr)' }, svg));
+    });
+    const defs = el('defs', {}, svg);
+    const mk = el('marker', { id: 'mu-arr', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto' }, defs);
+    el('path', { d: 'M0,0 L10,5 L0,10 z', fill: 'var(--border)' }, mk);
+    const qNote = el('text', { x: COLX[1] + GW / 2, y: ROWY[1] + GY * STEP + 22, 'text-anchor': 'middle', 'font-size': 11.5, class: 't-muted', text: 'query는 전체 48개 그대로 출력으로 직행' }, svg);
+    const verdictA = el('text', { x: COLX[2] + GW / 2, y: ROWY[0] + GY * STEP + 22, 'text-anchor': 'middle', 'font-size': 12, class: 't-strong' }, svg);
+    const verdictB = el('text', { x: COLX[2] + GW / 2, y: ROWY[1] + GY * STEP + 22, 'text-anchor': 'middle', 'font-size': 12, class: 't-strong' }, svg);
+
+    const layer = el('g', {}, svg);
+    const toks = []; // {node, kf: [[t, x, y, rgb, opacity, stroke]]}
+    const add = (kf, extra = {}) => {
+      const node = el('rect', { width: CS, height: CS, rx: 4, 'stroke-width': 2, ...extra }, layer);
+      toks.push({ node, kf });
+    };
+    const N = GX * GY;
+    for (let i = 0; i < N; i++) {
+      const c = own(i);
+      // static inputs (both rows)
+      [0, 1].forEach((row) => { const [x, y] = pos(0, row, i); add([[0, x, y, c, 1]]); });
+      // --- Row A: merge -> attention -> unmerge
+      const [ax, ay] = pos(0, 0, i);
+      if (srcOf.has(i)) {
+        const p = srcOf.get(i), [mx, my] = pos(1, 0, p.dst);
+        add([[0, ax, ay, c, 0], [1, ax, ay, c, 1], [3, mx, my, c, 1], [3.3, mx, my, c, 0]]);
+        // unmerge: copy flies back out of the dst slot to the src slot
+        const [ox, oy] = pos(2, 0, i);
+        add([[0, mx, my, avg(p), 0], [4.6, mx, my, avg(p), 0], [4.7, mx, my, avg(p), 1], [7, ox, oy, avg(p), 1]], { class: 'mu-copy' });
+      } else {
+        const [mx, my] = pos(1, 0, i), p = dstOf.get(i);
+        add([[0, ax, ay, c, 0], [1, ax, ay, c, 1], [3, mx, my, c, 1], [3.6, mx, my, p ? avg(p) : c, 1], [11, mx, my, p ? avg(p) : c, 1]]);
+        const [ox, oy] = pos(2, 0, i);
+        add([[0, mx, my, p ? avg(p) : c, 0], [4.6, mx, my, p ? avg(p) : c, 0], [4.7, mx, my, p ? avg(p) : c, 1], [7, ox, oy, p ? avg(p) : c, 1]], p ? { class: 'mu-copy' } : {});
+      }
+      // --- Row B: KV shrinks, queries go straight through
+      const [bx, by] = pos(0, 1, i), [kx, ky] = pos(1, 1, i), [qx, qy] = pos(2, 1, i);
+      if (srcOf.has(i)) add([[0, bx, by, c, 0], [1, bx, by, c, 1], [3, kx, ky, c, 0.06]]);
+      else add([[0, bx, by, c, 0], [1, bx, by, c, 1], [3, kx, ky, c, 1], [11, kx, ky, c, 1]]);
+      add([[0, bx, by, c, 0], [4.6, bx, by, c, 0], [4.7, bx, by, c, 1], [7, qx, qy, c, 1]], { 'data-arc': 1 });
+    }
+    const copies = [...layer.querySelectorAll('.mu-copy')];
+    const pulse = [0, 1].map((row) => el('rect', { x: COLX[1] - 6, y: ROWY[row] - 6, width: GW + 12, height: GY * STEP + 10, rx: 8, fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2 }, svg));
+
+    const nDiff = MERGED.length * 2;
+    const STEPS = [
+      ['같은 frame t의 토큰 48개에서 시작', '위: 기존 merge→unmerge 방식 / 아래: TTM'],
+      ['1 · merge: 비슷한 토큰 쌍을 하나로 합침', '위는 토큰 자체가 합쳐져 평균값이 되고, 아래는 K/V에서만 빠집니다.'],
+      ['2 · attention: 줄어든 토큰으로 계산', '두 방식 모두 K/V 길이가 48 → 36으로 줄어 비용이 같이 줄어듭니다.'],
+      ['3 · 출력: 위는 unmerge로 복사, 아래는 query마다 바로 출력', '위는 합쳐진 값을 원래 두 자리에 복사해 넣고, 아래는 원래 query 48개가 각자 출력을 받습니다.'],
+      ['결과: 기존 방식은 해상도가 떨어지고, TTM은 패치마다 고유한 출력', `빨간 테두리 = unmerge로 복사된 패치 (${nDiff}/48)`],
+    ];
+    const T = 12.5;
+    function interp(kf, t) {
+      if (t <= kf[0][0]) return kf[0];
+      for (let k = 1; k < kf.length; k++) {
+        if (t <= kf[k][0]) {
+          const a = kf[k - 1], b = kf[k], f = ease((t - a[0]) / (b[0] - a[0]));
+          return [t, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, mixRGB(a[3], b[3], f), a[4] + (b[4] - a[4]) * f, f];
+        }
+      }
+      return kf[kf.length - 1];
+    }
+    function draw(t) {
+      const k = t < 1 ? 0 : t < 3.4 ? 1 : t < 4.6 ? 2 : t < 7.2 ? 3 : 4;
+      step.textContent = STEPS[k][0]; sub.textContent = STEPS[k][1];
+      const fadeOut = 1 - phase(t, 11.8, T);
+      toks.forEach(({ node, kf }) => {
+        const v = interp(kf, t);
+        let x = v[1], y = v[2], size = CS;
+        if (node.dataset.arc && t > 4.7 && t < 7) {
+          // queries travel as small dots over the K/V grid, then land at full size
+          const b = Math.sin(Math.PI * (t - 4.7) / 2.3);
+          y -= b * 60; size = CS * (1 - 0.72 * b); x += (CS - size) / 2; y += (CS - size) / 2;
+        }
+        node.setAttribute('x', x); node.setAttribute('y', y);
+        node.setAttribute('width', size); node.setAttribute('height', size);
+        node.setAttribute('fill', rgbStr(v[3])); node.setAttribute('opacity', (v[4] * fadeOut).toFixed(3));
+      });
+      const red = phase(t, 7.2, 8);
+      copies.forEach((c) => c.setAttribute('stroke', red > 0 ? `rgba(227,73,72,${red})` : 'none'));
+      const pl = t > 3.4 && t < 4.6 ? 0.35 + 0.65 * Math.abs(Math.sin((t - 3.4) * Math.PI * 2)) : 0;
+      pulse.forEach((p) => p.setAttribute('stroke-opacity', pl.toFixed(2)));
+      verdictA.textContent = t > 7.2 ? `복사된 패치 ${nDiff}/48 → 해상도 손실` : '';
+      verdictB.textContent = t > 7.2 ? '복사된 패치 0/48 → 해상도 유지' : '';
+      verdictA.setAttribute('opacity', fadeOut); verdictB.setAttribute('opacity', fadeOut);
+      qNote.setAttribute('opacity', t > 4.6 && t < 7.2 ? 1 : 0.4);
+    }
+
+    let start = performance.now(), paused = reduceMotion, pausedAt = 9, raf = null;
+    const btn = $('#mu-toggle');
+    const loop = (now) => { draw(((now - start) / 1000) % T); raf = requestAnimationFrame(loop); };
+    const play = () => { start = performance.now() - pausedAt * 1000; raf = requestAnimationFrame(loop); };
+    const stop = () => { cancelAnimationFrame(raf); raf = null; pausedAt = ((performance.now() - start) / 1000) % T; };
+    btn.addEventListener('click', () => { paused = !paused; btn.textContent = paused ? '재생' : '일시정지'; paused ? stop() : play(); });
+    new IntersectionObserver((es) => es.forEach((e) => {
+      if (e.isIntersecting && !paused && !raf) { pausedAt = 0; play(); }
+      else if (!e.isIntersecting && raf) stop();
+    })).observe(svg);
+    if (paused) btn.textContent = '재생';
+    const freeze = new URLSearchParams(location.search).get('mu'); // ?mu=<seconds> freezes a frame (for screenshots)
+    if (freeze !== null) { paused = true; btn.textContent = '재생'; pausedAt = +freeze; }
+    draw(freeze !== null ? +freeze : 9);
+  }
+
+  /* ---------------- Resolution demo: merge-unmerge vs KV-asymmetric ---------------- */
+  function resolutionDemo() {
+    const cv = $('#res-canvas'); if (!cv) return;
+    const ctx = cv.getContext('2d');
+    const W = SCENE_W, H = SCENE_H, PS = 14, GX = W / PS, GY = H / PS, GAP = 24, TOP = 28, SHIFT = 6;
+    const LW = W * 3 + GAP * 2, LH = H + TOP + 30;
+    const rIn = $('#rr-in'), rOut = $('#rr-out'), btn = $('#res-play');
+
+    const depth = sceneDepth;
+    const Dt = new Float32Array(W * H), Dn = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { Dt[y * W + x] = depth(x, y); Dn[y * W + x] = depth(Math.min(W - 1, x + SHIFT), y); }
+
+    const cmap = depthRGB;
+    // per-patch stats; similarity = how alike the t / t+1 patches are (ToMe picks the most similar first)
+    const patches = [];
+    for (let py = 0; py < GY; py++) for (let px = 0; px < GX; px++) {
+      let mt = 0, mn = 0, diff = 0;
+      for (let y = py * PS; y < (py + 1) * PS; y++) for (let x = px * PS; x < (px + 1) * PS; x++) {
+        const a = Dt[y * W + x], b = Dn[y * W + x]; mt += a; mn += b; diff += Math.abs(a - b);
+      }
+      const n = PS * PS;
+      patches.push({ px, py, even: (py * GX + px) % 2 === 0, mean: (mt + mn) / (2 * n), diff: diff / n + 1e-4 * hash(px, py) });
+    }
+    const order = patches.filter((p) => p.even).sort((a, b) => a.diff - b.diff);
+    const Ppatch = GX * GY;
+
+    const img = (w, h) => new ImageData(w, h);
+    const vanilla = img(W, H), merged = img(W, H);
+    function fill(target, src) {
+      for (let i = 0; i < W * H; i++) { const c = cmap(src[i]); target.data.set([c[0], c[1], c[2], 255], i * 4); }
+    }
+    fill(vanilla, Dt);
+    const off = document.createElement('canvas'); off.width = W; off.height = H;
+    const octx = off.getContext('2d');
+
+    let r = 0, dropped = new Set();
+    function compute() {
+      const n = Math.min(Math.floor(r * Ppatch), Math.floor(Ppatch / 2));
+      dropped = new Set(order.slice(0, n));
+      merged.data.set(vanilla.data);
+      let err = 0;
+      dropped.forEach((p) => {
+        const c = cmap(p.mean);
+        for (let y = p.py * PS; y < (p.py + 1) * PS; y++) for (let x = p.px * PS; x < (p.px + 1) * PS; x++) {
+          merged.data.set([c[0], c[1], c[2], 255], (y * W + x) * 4);
+          err += Math.abs(p.mean - Dt[y * W + x]);
+        }
+      });
+      return { n, err: err / (W * H) };
+    }
+
+    function panel(ox, data, title, sub) {
+      octx.putImageData(data, 0, 0);
+      ctx.drawImage(off, ox, TOP);
+      ctx.fillStyle = css('--text'); ctx.font = '600 13px Inter, "Noto Sans KR", sans-serif';
+      ctx.fillText(title, ox, 16);
+      ctx.fillStyle = css('--text-2'); ctx.font = '12px Inter, "Noto Sans KR", sans-serif';
+      ctx.fillText(sub, ox, TOP + H + 20);
+    }
+    function render() {
+      const dpr = window.devicePixelRatio || 1, w = cv.clientWidth;
+      cv.width = Math.round(w * dpr); cv.height = Math.round(w * LH / LW * dpr);
+      cv.style.height = (w * LH / LW) + 'px';
+      const k = cv.width / LW;
+      ctx.setTransform(k, 0, 0, k, 0, 0);
+      ctx.clearRect(0, 0, LW, LH);
+      const { n, err } = compute();
+      rOut.textContent = r.toFixed(2);
+      panel(0, vanilla, '입력 frame t', `K/V에서 제거된 패치 ${n} / ${Ppatch}`);
+      panel(W + GAP, merged, 'Merge → Unmerge 출력', `원본 대비 평균 오차 ${(err * 100).toFixed(2)}`);
+      panel(2 * (W + GAP), vanilla, 'KV-Asymmetric 출력 (TTM)', '모든 패치가 자기 query를 유지');
+      // hatch dropped patches on the input panel
+      ctx.save(); ctx.beginPath(); ctx.rect(0, TOP, W, H); ctx.clip();
+      ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 1.2;
+      dropped.forEach((p) => {
+        const x0 = p.px * PS, y0 = TOP + p.py * PS;
+        ctx.strokeRect(x0 + .5, y0 + .5, PS - 1, PS - 1);
+        ctx.beginPath(); ctx.moveTo(x0, y0 + PS); ctx.lineTo(x0 + PS, y0); ctx.stroke();
+      });
+      ctx.restore();
+      // patch grid on outputs
+      [W + GAP, 2 * (W + GAP)].forEach((ox) => {
+        ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.lineWidth = 1;
+        for (let x = 0; x <= GX; x++) { ctx.beginPath(); ctx.moveTo(ox + x * PS + .5, TOP); ctx.lineTo(ox + x * PS + .5, TOP + H); ctx.stroke(); }
+        for (let y = 0; y <= GY; y++) { ctx.beginPath(); ctx.moveTo(ox, TOP + y * PS + .5); ctx.lineTo(ox + W, TOP + y * PS + .5); ctx.stroke(); }
+      });
+    }
+
+    let playing = !reduceMotion, t0 = performance.now(), raf;
+    const PERIOD = 9000;
+    function loop(now) {
+      const ph = ((now - t0) % PERIOD) / PERIOD;
+      r = 0.5 * (0.5 - 0.5 * Math.cos(ph * 2 * Math.PI));
+      rIn.value = r; render();
+      raf = requestAnimationFrame(loop);
+    }
+    function setPlaying(v) {
+      playing = v; btn.textContent = v ? '일시정지' : '재생';
+      if (v) { const ph = Math.acos(clamp(1 - 4 * r, -1, 1)) / (2 * Math.PI); t0 = performance.now() - ph * PERIOD; raf = requestAnimationFrame(loop); }
+      else cancelAnimationFrame(raf);
+    }
+    btn.addEventListener('click', () => setPlaying(!playing));
+    rIn.addEventListener('input', () => { if (playing) setPlaying(false); r = +rIn.value; render(); });
+    window.addEventListener('resize', render);
+    // start only when visible
+    const io = new IntersectionObserver((es) => es.forEach((e) => {
+      if (e.isIntersecting && playing && !raf) { t0 = performance.now(); raf = requestAnimationFrame(loop); }
+      else if (!e.isIntersecting && raf) { cancelAnimationFrame(raf); raf = null; }
+    }));
+    io.observe(cv);
+    if (!playing) { btn.textContent = '재생'; r = 0.35; rIn.value = r; }
+    render();
+  }
+
   /* ---------------- Results chart ---------------- */
   // Table 1 of the TTM draft (Tanks and Temples, H100, BF16)
   const METHODS = [
@@ -629,7 +904,7 @@
 
   function init() {
     renderMath();
-    hero(); explorer(); pipeline(); asym(); layers(); epipolar(); results(); runtime(); schedule();
+    hero(); explorer(); pipeline(); asym(); mergeUnmergeAnim(); resolutionDemo(); layers(); epipolar(); results(); runtime(); schedule();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();

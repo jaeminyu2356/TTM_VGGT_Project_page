@@ -157,3 +157,15 @@ svg .t-muted { fill: var(--text-3); }
 svg .mono { font-family: "JetBrains Mono", monospace; }
 
 .footer { color: var(--text-3); font-size: 13px; padding: 40px 16px 60px; border-top: 1px solid var(--border); margin-top: 60px; }
+
+.idea-flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.idea-step { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; position: relative; }
+.idea-step p { margin: 6px 0 0; font-size: 14px; color: var(--text-2); line-height: 1.65; }
+.idea-num {
+  width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff;
+  display: grid; place-items: center; font-weight: 600; font-size: 13px; margin-bottom: 8px;
+}
+.idea-title { font-weight: 600; }
+@media (max-width: 860px) { .idea-flow { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 520px) { .idea-flow { grid-template-columns: 1fr; } }
+.resdemo canvas { width: 100%; display: block; }
